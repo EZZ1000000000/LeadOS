@@ -6,13 +6,13 @@
 2. **Add New → Project → Import** → اختار `LeadOS`
 3. **قبل أول Deploy** — بدّل قاعدة البيانات من SQLite المحلي لـNeon (مجاني 0.5GB):
    - [neon.tech](https://neon.tech) → أنشئ مشروع → انسخ Connection String
-   - في `prisma/schema.prisma` غيّر السطر: `provider = "sqlite"` → `provider = "postgresql"`
-   - عدّل `DATABASE_URL` في متغيرات Vercel للرابط بتاع Neon
-   - شغّل `npx prisma db push` محليًا على الرابط الجديد (هيبنى الجداول سحابيًا)
-4. الصق متغيرات البيئة من `.env.example` (كلها في Settings → Environment Variables)
+   - **السكيما الإنتاجية تلقائية**: Vercel بيستخدم `vercel-build` اللي يولّد عميل Prisma من `prisma/schema.production.prisma` (PostgreSQL جاهزة بكل الموديلات بما فيها نظام الأيجنت) — مفيش أي تعديل يدوي في السكيما
+   - حط `DATABASE_URL` في متغيرات Vercel = رابط Neon
+   - شغّل `npx prisma db push --schema prisma/schema.production.prisma` محليًا على رابط Neon (هيبنى الجداول سحابيًا)
+4. الصق متغيرات البيئة من `.env` المحلية (كلها في Settings → Environment Variables) — أهمها: `AUTH_SECRET` (عشوائي قوي جديد)، `CRON_SECRET`، `GEMINI_API_KEY`، مفاتيح البحث
 5. Deploy — هيطلعلك رابط دائم `leados.vercel.app`
 
-> ملاحظة: التطبيق مصمم بالكامل `String` enums و Json — التحويل لـPostgres سلس بدون تعديل كود.
+> ملاحظة: التطبيق مصمم بالكامل `String` enums و Json — التحويل لـPostgres سلس بدون تعديل كود. سكيما الإنتاج متحقق منها بـ`prisma validate` ومطابقة هيكليًا للديف 100% (سكريبت `scripts/diff-schemas.ts`).
 
 ## 2) المجدول (تيك كل 10 دقايق) — مجاني
 

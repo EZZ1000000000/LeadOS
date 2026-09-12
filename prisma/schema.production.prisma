@@ -191,11 +191,14 @@
  }
 
  enum AiProvider {
+   GEMINI
+   GROQ
    MISTRAL
    OPENAI
    ANTHROPIC
    OLLAMA
    VLLM
+   ZAI
    OTHER
  }
 
@@ -326,10 +329,16 @@
    alerts         Alert[]
    auditLogs      AuditLog[]
    contactLists   ContactList[]
-   people         Person[]
-   activities     Activity[]
-   tasks          Task[]
-   notes          Note[]
+   people        Person[]
+   activities    Activity[]
+   tasks         Task[]
+   notes         Note[]
+   contents      ContentItem[]
+   findings      Finding[]
+   deals         Deal[]
+   agentRuns     AgentRun[]
+   searchMemories SearchMemory[]
+   agentInsights AgentInsight[]
  }
 
  model WorkspaceMember {
@@ -728,16 +737,17 @@
  }
 
  model LeadContent {
-   leadId      String
-   contentId   String
-   relationship String?
+   id             String   @id @default(cuid())
+   leadId         String
+   contentId      String
+   relationship   String?
    relevanceScore Int?
-   createdAt   DateTime @default(now())
+   createdAt      DateTime @default(now())
 
    lead    Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
    content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
-   @@id([leadId, contentId])
+   @@unique([leadId, contentId])
    @@index([contentId])
  }
 
@@ -1184,4 +1194,89 @@
 
    @@index([workspaceId, createdAt])
    @@index([entityType, entityId])
+ }
+
+/// تشغيل كامل للايجنت المستقل — هدف واحد + خطة + تنفيذ + نتائج
+ model AgentRun {
+   id             String   @id @default(cuid())
+   workspaceId    String
+   objective      String
+   status         String   @default("RUNNING") // RUNNING | SUCCESS | FAILED
+   plannedQueries Json? // string[]
+   platforms      Json? // string[] — المنصات المختارة
+   steps          AgentStep[]
+   leadsCreated   Int      @default(0)
+   itemsScanned   Int      @default(0)
+   memoryHits     Int      @default(0)
+   reusedMemory   Boolean  @default(false)
+   summary        String?
+   errorMessage   String?
+   durationMs     Int      @default(0)
+   createdById    String?
+   createdAt      DateTime @default(now())
+   completedAt    DateTime?
+
+   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+   @@index([workspaceId, createdAt])
+   @@index([workspaceId, status])
+ }
+
+/// خطوة واحدة داخل تشغيل الأيجنت (نداء أداة أو قرار)
+ model AgentStep {
+   id         String   @id @default(cuid())
+   runId      String
+   idx        Int
+   tool       String
+   input      Json?
+   output     Json?
+   status     String   @default("OK") // OK | FAILED | SKIPPED
+   note       String?
+   durationMs Int      @default(0)
+   createdAt  DateTime @default(now())
+
+   run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+   @@index([runId, idx])
+ }
+
+/// ذاكرة البحث العامة — "ادور على دورك قبل ما تدور": كل استعلام اتنفذ يتحفظ بنتايجه وجودته
+ model SearchMemory {
+   id              String   @id @default(cuid())
+   workspaceId     String
+   query           String
+   queryHash       String // FNV-1a of normalized query
+   normalizedQuery String // keywords sorted
+   platform        String   @default("WEB")
+   resultCount     Int      @default(0)
+   leadCount       Int      @default(0)
+   avgScore        Int      @default(0)
+   bestScore       Int      @default(0)
+   qualityScore    Int      @default(0) // 0-100 — مدى جودة هذا الاستعلام كمنجم ليدز
+   provider        String?
+   bestResults     Json? // أفضل 10 نتايج مختصرة {title,url,score}
+   insights        Json? // ملاحظات مكتسبة
+   hitCount        Int      @default(1) // كام مرة اتعاد استخدامه
+   lastUsedAt      DateTime @default(now())
+   createdAt       DateTime @default(now())
+
+   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+   @@unique([workspaceId, queryHash, platform])
+ }
+
+/// بصيرة مكتسبة من الأيجنت — بتتحفظ وتتوزن لتحسين التشغيلات الجاية
+ model AgentInsight {
+   id          String   @id @default(cuid())
+   workspaceId String
+   kind        String // query_pattern | platform_signal | negative | positive | contact_harvest
+   pattern     String
+   note        String
+   evidence    Json?
+   weight      Int      @default(1)
+   createdAt   DateTime @default(now())
+
+   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+   @@index([workspaceId, kind, weight])
  }
