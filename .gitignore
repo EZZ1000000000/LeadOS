@@ -69,3 +69,4 @@ worker/__pycache__/
 /worklog.md
 *.sqlite
 *.db
+!.env.example
