@@ -1,6 +1,7 @@
 // LeadOS — AI Provider Abstraction
-// Priority: Mistral API (key pool with rotation: MISTRAL_API_KEYS + MISTRAL_API_KEY)
-//           → z-ai SDK (sandbox default) → null (caller falls back to heuristics)
+// Priority: GEMINI (مجاني 1500 طلب/يوم) → GROQ (مجاني 14400/يوم) →
+//           Mistral pool (25 مفتاح بدوران) → z-ai SDK → null (احتياطي heuristics)
+// Gemini/Groq يتaktivان تلقائيًا بمجرد وجود GEMINI_API_KEY / GROQ_API_KEY في البيئة
 // Every call is logged as an AiRun for cost tracking (doc §64).
 import { db } from "@/lib/db"
 
@@ -84,6 +85,50 @@ function noteMistralFailure(key: string, status: number): void {
   }
 }
 
+// ---- OpenAI-compatible free providers (Gemini / Groq) ----
+interface FreeProvider { name: string; baseUrl: string; model: string; maxPerDay: string }
+const FREE_PROVIDERS: FreeProvider[] = [
+  ...(process.env.GEMINI_API_KEY ? [{ name: "GEMINI", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", model: process.env.GEMINI_MODEL || "gemini-2.0-flash", maxPerDay: "1500/يوم مجاني" }] : []),
+  ...(process.env.GROQ_API_KEY ? [{ name: "GROQ", baseUrl: "https://api.groq.com/openai/v1", model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile", maxPerDay: "14400/يوم مجاني" }] : []),
+]
+const freeCooldownUntil = new Map<string, number>() // provider → timestamp
+
+async function callFreeProvider(p: FreeProvider, messages: AiMessage[], opts: AiCallOptions): Promise<AiResult | null> {
+  const key = p.name === "GEMINI" ? process.env.GEMINI_API_KEY : process.env.GROQ_API_KEY
+  if (!key) return null
+  const cooldown = freeCooldownUntil.get(p.name) ?? 0
+  if (cooldown > Date.now()) return null
+  const started = Date.now()
+  try {
+    const res = await fetch(`${p.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: p.model,
+        messages,
+        temperature: opts.temperature ?? 0.2,
+        max_tokens: opts.maxTokens ?? 1600,
+      }),
+      signal: AbortSignal.timeout(45000),
+    })
+    if (!res.ok) {
+      // 429 = حصة/معدل — تبريد دقيقة وينتقل للتابع
+      freeCooldownUntil.set(p.name, Date.now() + (res.status === 429 ? 60_000 : 10_000))
+      return null
+    }
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }
+    const text = data.choices?.[0]?.message?.content ?? ""
+    if (!text) return null
+    return { text, provider: p.name, model: p.model, latencyMs: Date.now() - started, inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens }
+  } catch {
+    freeCooldownUntil.set(p.name, Date.now() + 10_000)
+    return null
+  }
+}
+
 async function callMistral(messages: AiMessage[], opts: AiCallOptions): Promise<AiResult | null> {
   const pool = mistralKeyPool()
   if (!pool.length) return null
@@ -158,7 +203,12 @@ async function callZai(messages: AiMessage[], opts: AiCallOptions): Promise<AiRe
 }
 
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
-  let result = await callMistral(messages, opts)
+  let result: AiResult | null = null
+  for (const p of FREE_PROVIDERS) {
+    result = await callFreeProvider(p, messages, opts)
+    if (result) break
+  }
+  if (!result) result = await callMistral(messages, opts)
   if (!result) result = await callZai(messages, opts)
   // Log AiRun for observability/cost tracking (best-effort)
   if (result && opts.workspaceId) {
@@ -218,8 +268,11 @@ export function extractJson<T>(text: string): T | null {
   return null
 }
 
-export function aiProviderStatus(): { mistral: boolean; keys: number; banned: number; fallback: string } {
+export function aiProviderStatus() {
+  const now = Date.now()
   return {
+    gemini: Boolean(process.env.GEMINI_API_KEY) && (freeCooldownUntil.get("GEMINI") ?? 0) <= now,
+    groq: Boolean(process.env.GROQ_API_KEY) && (freeCooldownUntil.get("GROQ") ?? 0) <= now,
     mistral: mistralKeyPool().length > 0,
     keys: mistralKeyPool().filter((k) => !mistralBanned.has(k)).length,
     banned: mistralBanned.size,
