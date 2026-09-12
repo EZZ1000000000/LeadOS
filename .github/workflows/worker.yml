@@ -1,0 +1,69 @@
+# LeadOS Worker على GitHub Actions — مجاني 100% للتشغيل الدوري
+# ⚠️ مهم: GitHub Actions عناوينه داتا سنتر — مناسب لـ Google Maps والبحث العام فقط.
+#    للفيسبوك المسجّل بالكوكيز استخدم VPS/Railway ببروكسي سكني.
+name: LeadOS Worker
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"     # كل 6 ساعات
+  workflow_dispatch: {}        # زر تشغيل يدوي من واجهة GitHub
+
+concurrency:
+  group: leados-worker
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LEADOS_BASE_URL: ${{ secrets.LEADOS_BASE_URL }}
+      LEADOS_API_KEY: ${{ secrets.LEADOS_API_KEY }}
+      WORKER_MODE: "run"
+      TZ: Africa/Cairo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: استرجاع حالة الميزانيات من آخر تشغيل
+        uses: actions/cache@v4
+        with:
+          path: worker/state
+          key: leados-guard-state
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: تثبيت كروميوم
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver xvfb fonts-noto-core
+
+      - name: تثبيت المتطلبات
+        working-directory: worker
+        run: pip install -r requirements.txt
+
+      - name: دورة اكتشاف
+        working-directory: worker
+        run: |
+          # إعدادات وضع once لـ GitHub Actions
+          python - <<'PY'
+          import yaml, pathlib
+          p = pathlib.Path("config.yaml")
+          cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+          cfg["worker"]["mode"] = "run"
+          # على GH Actions نوقف فيسبوك المسجل بالكوكيز (IP داتا سنتر = خطر حظر)
+          cfg["queries"].pop("FACEBOOK", None)
+          p.write_text(yaml.dump(cfg, allow_unicode=True), encoding="utf-8")
+          PY
+          python bot.py run
+
+      - name: حفظ مخرجات فشل (للتشخيص)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-debug
+          path: |
+            worker/output
+            worker/state
+          retention-days: 3

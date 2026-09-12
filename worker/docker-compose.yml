@@ -1,0 +1,23 @@
+# LeadOS Worker — تشغيل دائم على VPS بأمر واحد
+# docker compose up -d
+services:
+  leados-worker:
+    build: .
+    container_name: leados-worker
+    restart: unless-stopped
+    environment:
+      - LEADOS_BASE_URL=${LEADOS_BASE_URL}
+      - LEADOS_API_KEY=${LEADOS_API_KEY}
+      - WORKER_PROXY=${WORKER_PROXY:-}
+      - WORKER_MODE=loop
+      - TZ=Africa/Cairo
+    volumes:
+      - ./state:/app/state        # الميزانيات والكوكيز (تبقى بعد إعادة التشغيل)
+      - ./profiles:/app/profiles  # بروفايلات المتصفح (جلسات مسجلة)
+      - ./config.yaml:/app/config.yaml:ro
+    shm_size: "1g"                # كروميوم محتاج shared memory كفاية
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
