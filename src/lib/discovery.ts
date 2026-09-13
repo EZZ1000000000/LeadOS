@@ -478,8 +478,22 @@ async function googlePlacesAdapter(query: string, limit: number): Promise<Discov
 }
 
 // ---- Serper Places → DiscoveredItem (بيزنسات محلية ببيانات كاملة: تليفون/موقع/تقييم) ----
+// تبسيط استعلام النيّة لاستعلام مناسِب لخرائط جوجل:
+// الخرائط بتفهم «نوع البيزنس + المكان» بس — جُمَل النيّة (محتاجة/عايز...) بترجّع صفر
+export function simplifyPlacesQuery(q: string): string {
+  const markers = ["محتاجة", "محتاج", "عايز", "عايزين", "مطلوب", "بيدور", "محتاجين", "looking for", "needs", "need", "wants", "want"]
+  let cut = -1
+  const lower = q.toLowerCase()
+  for (const m of markers) {
+    const i = lower.indexOf(m.toLowerCase())
+    if (i > 3 && (cut === -1 || i < cut)) cut = i
+  }
+  const simplified = (cut > 3 ? q.slice(0, cut) : q).replace(/\s+/g, " ").trim()
+  return simplified || q
+}
+
 export async function placesToItems(query: string, limit = 8): Promise<DiscoveredItem[]> {
-  const places = await placesSerper(query, limit)
+  const places = await placesSerper(simplifyPlacesQuery(query), limit)
   return places.map((p) => ({
     externalId: p.placeId ? `gmaps:${p.placeId}` : `maps:${hashId(`${p.title}|${p.address ?? ""}`)}`,
     title: p.title,

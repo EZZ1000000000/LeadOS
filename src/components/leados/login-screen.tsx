@@ -13,8 +13,8 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ onAuthed }: LoginScreenProps) {
-  const [loginEmail, setLoginEmail] = useState("admin@leados.ai")
-  const [loginPassword, setLoginPassword] = useState("123456")
+  const [loginEmail, setLoginEmail] = useState("")
+  const [loginPassword, setLoginPassword] = useState("")
   const [regName, setRegName] = useState("")
   const [regEmail, setRegEmail] = useState("")
   const [regPassword, setRegPassword] = useState("")
@@ -120,7 +120,7 @@ export function LoginScreen({ onAuthed }: LoginScreenProps) {
                   <Input id="login-password" dir="ltr" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doLogin()} />
                 </div>
                 <p className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
-                  حساب تجريبي جاهز: <span dir="ltr" className="font-mono text-primary">admin@leados.ai</span> / <span dir="ltr" className="font-mono text-primary">123456</span>
+                  أول مرة؟ أنشئ حسابك من تبويب «حساب جديد» وسيتم تجهيز مساحة عملك وخط المبيعات تلقائيًا
                 </p>
                 <Button className="w-full" onClick={doLogin} disabled={busy}>
                   {busy ? "جارٍ الدخول..." : "دخول"}
