@@ -16,7 +16,7 @@ export interface LeadClassification {
 
 const VALID_SERVICES = new Set([
   "website", "mobile_app", "pos", "crm", "erp", "ecommerce", "booking",
-  "ordering", "marketing", "automation", "seo", "branding", "cloud", "integrations",
+  "ordering", "marketing", "automation", "seo", "branding", "cloud", "integrations", "wifi_cards",
 ])
 
 // Layer 1 — cheap keyword filtering (no AI cost)
@@ -30,7 +30,7 @@ const INTENT_KEYWORDS_EN = [
   "looking for", "need a", "need to", "we need", "searching for", "recommend",
   "any suggestions", "who can build", "hire", "rfp", "quote for",
 ]
-const SYSTEM_WORDS = ["برنامج", "سيستم", "نظام", "تطبيق", "موقع", "app", "application", "system", "software", "website", "crm", "pos", "erp", "برمجة", "مبرمج", "شركة برمجيات", "developer", "agency"]
+const SYSTEM_WORDS = ["برنامج", "سيستم", "نظام", "تطبيق", "موقع", "app", "application", "system", "software", "website", "crm", "pos", "erp", "برمجة", "مبرمج", "شركة برمجيات", "developer", "agency", "كروت النت", "كروت نت", "نظام كروت", "واي فاي", "wifi", "hotspot", "انترنت"]
 const INDUSTRY_HINTS: Array<[RegExp, string]> = [
   [/كافيه|قهوة|coffee|cafe/i, "cafe"],
   [/مطعم|مطاعم|restaurant|food/i, "restaurant"],
@@ -65,6 +65,7 @@ function detectServices(text: string): string[] {
     [/واتساب|whatsapp|أتمتة|automation/, "automation"],
     [/seo|ظهور جوجل/, "seo"],
     [/هوية|logo|براندينج|branding/, "branding"],
+    [/كروت نت|كروت النت|نظام كروت|كروت واي فاي|واي فاي|wifi|hotspot/, "wifi_cards"],
   ]
   for (const [re, key] of map) if (re.test(t)) found.push(key)
   return found
@@ -126,7 +127,8 @@ export async function classifyContent(
         role: "system",
         content:
           `أنت مصنف Leads داخل منصة LeadOS. حلل النص وحدد إن كان صاحبه عميل محتمل (lead) لوكالة برمجية/تسويقية مصرية. ` +
-          `ارجع JSON فقط بالشكل: {"is_lead":bool,"lead_type":"inbound_request|opportunity_signal|not_lead","services":["website|mobile_app|pos|crm|erp|ecommerce|booking|ordering|marketing|automation|seo|branding|cloud|integrations"],"business_type":"cafe|restaurant|clinic|retail|gym|salon|pharmacy|real_estate|law_firm|factory|education|","intent":"VERY_HIGH|HIGH|MEDIUM|LOW|NONE","score":0-99,"urgency":"high|medium|low","reason":"سبب قصير بالعربي","language":"ar|en"}. ` +
+          `الخدمات المعروضة بتشمل: مواقع وتطبيقات وتسويق رقمي وفوتوشوت/تصوير احترافي، وكمان نظام كروت النت/الواي فاي للكافيهات والمطاعم. ` +
+          `ارجع JSON فقط بالشكل: {"is_lead":bool,"lead_type":"inbound_request|opportunity_signal|not_lead","services":["website|mobile_app|pos|crm|erp|ecommerce|booking|ordering|marketing|automation|seo|branding|cloud|integrations|wifi_cards"],"business_type":"cafe|restaurant|clinic|retail|gym|salon|pharmacy|real_estate|law_firm|factory|education|","intent":"VERY_HIGH|HIGH|MEDIUM|LOW|NONE","score":0-99,"urgency":"high|medium|low","reason":"سبب قصير بالعربي","language":"ar|en"}. ` +
           `لا تخترع بيانات غير موجودة. القيم المسموحة فقط.`,
       },
       { role: "user", content: text },

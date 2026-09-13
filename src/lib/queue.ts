@@ -112,12 +112,20 @@ const NOISE_PATTERNS: RegExp[] = [
   /^https?:\/\/\S+$|^www\.\S+$|^\S+\.(com|net|org|eg|io)(\/\S*)?$/i, // URL as business name
   /^(try|swipe|check out|download now|subscribe|follow us|limited offer)\b/i, // clickbait
   /^(أفضل|افضل)\s*\d+\s|^best\s+\d+\s/i, // directory listicles "أفضل 302 دكتور..." — category pages, not businesses
+  // عقارات وإيجارات من مجموعات فيسبوك — مش بيزنسات
+  /^(شقه|شقة|غرفه|غرفة|استوديو|فيله|فيلا|أرض|ارض)\s/u,
+  /^(محتاج|محتاجة|عايز|عاوز|مطلوب)\s+(شقه|شقة|غرفه|غرفة|استوديو)/u,
+  /(للإيجار|للايجار|إيجار يومي|ايجار يومي|شقه مفروشه|شقة مفروشه|غرفه مفروشه|غرفة مفروشه)/u,
+  // لاحقات نتائج البحث لصفحات شخصية: "فلان - LinkedIn" إلخ
+  /\s[-–—]\s*(Facebook|LinkedIn|Instagram|YouTube|Twitter|X)\s*$/iu,
 ]
 
 /** Clean a SERP title into a usable business name (strip truncation artifacts). */
 function cleanName(raw: string): string {
   return raw
+    .replace(/[\u200E\u200F\u202A-\u202E]/g, "") // علامات اتجاه النص من نتائج SERP
     .replace(/^(title\s+)+/i, "")
+    .replace(/\s*[-–—|]\s*(Facebook|LinkedIn|Instagram|YouTube|Twitter|X)\s*$/i, "")
     .replace(/\s*(\.\.\.|…)\s*$/, "")
     .replace(/\s+/g, " ")
     .trim()
@@ -173,6 +181,10 @@ export async function ingestDiscoveredItems(
     const title = cleanName(item.title ?? "")
     if (!title || title.length < 5 || title.split(/\s+/).every((w) => w.startsWith("#"))) continue
     if (NOISE_PATTERNS.some((re) => re.test(title))) continue
+    // بروفايلات لينكدإن الشخصية مش بيزنسات — الشركات بتتجمع من /company/ بس
+    if (/linkedin\.com\/(in|pub)\//i.test(item.url)) continue
+    // بيزنسات خرائط جوجل: قائمة استهداف مباشرة — مش شرط فيها نية شراء صريحة
+    const isMapsBusiness = item.contentType === "BUSINESS" || (item.rawData as { platform?: string } | null)?.platform === "GOOGLE_MAPS"
     // JOBS platform: keep only expansion-signal roles (managers/dev/sales/marketing) —
     // generic operator/technician ads are hiring noise, not a growth lead.
     const itemPlatform = typeof (item.rawData as { platform?: string } | null)?.platform === "string"
@@ -201,11 +213,27 @@ export async function ingestDiscoveredItems(
         },
       })
     } catch {
-      continue // already collected before
+      // متجمع قبل كده — لو بيزنس خرائط لسه منغير Lead، كمّل تسجيله؛ وإلا تجاوز
+      if (!isMapsBusiness) continue
+      const existing = await db.contentItem.findUnique({
+        where: { sourceId_externalId: { sourceId: source.id, externalId: item.externalId } },
+      }).catch(() => null)
+      if (!existing) continue
+      const alreadyLinked = await db.leadContent.findFirst({ where: { contentId: existing.id }, select: { id: true } })
+      if (alreadyLinked) continue
+      content = existing
     }
 
     // Classify (AI if available, heuristic otherwise)
     const { classification } = await classifyContent(wsId, item.title, item.body, item.rawData ? JSON.stringify(item.rawData) : undefined)
+    if (!classification.is_lead && isMapsBusiness) {
+      // بيزنس حقيقي من خرائط جوجل — يتحفظ كـ lead (قائمة اتصال لبيع الأنظمة حتى من غير نية معلنة)
+      classification.is_lead = true
+      classification.business_type = classification.business_type || (item.rawData as { category?: string })?.category || ""
+      if (classification.intent === "NONE") classification.intent = "LOW"
+      classification.score = Math.max(classification.score, 45)
+      classification.reason = classification.reason || "بيزنس حقيقي من خرائط جوجل (قائمة استهداف)"
+    }
     if (!classification.is_lead) continue
 
     // Dedup by business identity signals — name must match what we'd store (handle > title)
@@ -247,7 +275,11 @@ export async function ingestDiscoveredItems(
         phone: normalizePhone(candidate.phone) ? candidate.phone : null,
         websiteUrl: candidate.websiteUrl,
         mapsPlaceId: candidate.mapsPlaceId,
-        mapsUrl: candidate.mapsPlaceId ? `https://www.google.com/maps/place/?q=place_id:${candidate.mapsPlaceId}` : null,
+        mapsUrl: candidate.mapsPlaceId
+          ? `https://www.google.com/maps/place/?q=place_id:${candidate.mapsPlaceId}`
+          : (typeof (item.rawData as { cid?: string })?.cid === "string" && (item.rawData as { cid?: string }).cid
+            ? `https://maps.google.com/?cid=${(item.rawData as { cid?: string }).cid}`
+            : null),
         rating: (item.rawData as { rating?: number })?.rating ?? null,
         reviewCount: (item.rawData as { reviewCount?: number })?.reviewCount ?? null,
         businessSources: {
