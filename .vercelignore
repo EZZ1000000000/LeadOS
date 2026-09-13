@@ -1,0 +1,14 @@
+.env
+upload/
+download/
+db/
+tool-results/
+worklog.md
+dev.log
+node_modules/
+scripts/
+skills/
+examples/
+mini-services/
+.claude*
+agent-ctx/
