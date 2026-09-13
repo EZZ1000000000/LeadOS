@@ -85,19 +85,25 @@ export interface PlaceResult {
   category?: string
   placeId?: string
   cid?: string
+  latitude?: number
+  longitude?: number
+  priceLevel?: string
 }
 
 export async function placesSerper(query: string, limit = 10): Promise<PlaceResult[]> {
   const key = process.env.SERPER_API_KEY
   if (!key) throw new Error("no key")
+  // ملاحظة حية: `location` + `hl:ar` معًا بيخلو Serper يرجع بيانات مبتورة (بدون تقييم/تليفون).
+  // gl:eg وحده كفاية لتثبيت مصر وبيرجع الحقول كاملة.
   const data = (await fetchJson("https://google.serper.dev/places", {
     method: "POST",
     headers: { "X-API-KEY": key, "Content-Type": "application/json" },
-    body: JSON.stringify({ q: query, gl: "eg", hl: "ar", location: "Egypt" }),
+    body: JSON.stringify({ q: query, gl: "eg" }),
   })) as {
     places?: Array<{
       title?: string; address?: string; phoneNumber?: string; website?: string
       rating?: number; ratingCount?: number; type?: string; placeId?: string; cid?: string
+      latitude?: number; longitude?: number; priceLevel?: string
     }>
   }
   return (data.places ?? [])
@@ -113,6 +119,9 @@ export async function placesSerper(query: string, limit = 10): Promise<PlaceResu
       category: p.type,
       placeId: p.placeId,
       cid: p.cid,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      priceLevel: p.priceLevel,
     }))
 }
 
@@ -495,7 +504,7 @@ export function simplifyPlacesQuery(q: string): string {
 export async function placesToItems(query: string, limit = 8): Promise<DiscoveredItem[]> {
   const places = await placesSerper(simplifyPlacesQuery(query), limit)
   return places.map((p) => ({
-    externalId: p.placeId ? `gmaps:${p.placeId}` : `maps:${hashId(`${p.title}|${p.address ?? ""}`)}`,
+    externalId: p.placeId ? `gmaps:${p.placeId}` : p.cid ? `gmaps_cid:${p.cid}` : `maps:${hashId(`${p.title}|${p.address ?? ""}`)}`,
     title: p.title,
     body: `${p.title} — ${p.address ?? ""} — تقييم ${p.rating ?? "N/A"} من ${p.ratingCount ?? 0} مراجعة${p.phone ? ` — تليفون ${p.phone}` : ""}${p.website ? " — لديه موقع إلكتروني." : " — لا يوجد موقع إلكتروني (فرصة)."} ${p.category ? `التصنيف: ${p.category}.` : ""}`,
     url: p.placeId
@@ -504,9 +513,10 @@ export async function placesToItems(query: string, limit = 8): Promise<Discovere
     contentType: "BUSINESS",
     language: /[\u0600-\u06FF]/.test(p.title) ? "ar" : "en",
     rawData: {
-      placeId: p.placeId, address: p.address, rating: p.rating,
+      placeId: p.placeId, cid: p.cid, address: p.address, rating: p.rating,
       reviewCount: p.ratingCount, website: p.website, phone: p.phone,
-      category: p.category, platform: "GOOGLE_MAPS", adapter: "serper_places",
+      category: p.category, latitude: p.latitude, longitude: p.longitude,
+      priceLevel: p.priceLevel, platform: "GOOGLE_MAPS", adapter: "serper_places",
     } as never,
   }))
 }

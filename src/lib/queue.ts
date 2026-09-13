@@ -237,8 +237,12 @@ export async function ingestDiscoveredItems(
       data: {
         workspaceId: wsId,
         name: businessName,
-        industry: classification.business_type || null,
+        industry: classification.business_type || (item.rawData as { category?: string })?.category || null,
+        category: (item.rawData as { category?: string })?.category ?? null,
         city: (item.rawData as { city?: string })?.city ?? null,
+        address: (item.rawData as { address?: string })?.address ?? null,
+        latitude: (item.rawData as { latitude?: number })?.latitude ?? undefined,
+        longitude: (item.rawData as { longitude?: number })?.longitude ?? undefined,
         country: "Egypt",
         phone: normalizePhone(candidate.phone) ? candidate.phone : null,
         websiteUrl: candidate.websiteUrl,

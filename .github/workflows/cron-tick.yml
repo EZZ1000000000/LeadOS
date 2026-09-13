@@ -1,0 +1,27 @@
+# LeadOS — Cron خارجي حقيقي: يضرب /api/cron/tick كل 15 دقيقة
+# يعمل كأوركستراتور: يفحص قواعد البحث المفعّلة → يجدول مهام اكتشاف → يشغّلها
+# (الأوركستراتور يحترم حد "قاعدة واحدة كل 10 دقائق" داخليًا)
+name: LeadOS Cron Tick
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"    # كل 15 دقيقة
+  workflow_dispatch: {}        # زر تشغيل يدوي
+
+concurrency:
+  group: leados-cron-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: تشغيل نبضة الأوركستراتور
+        run: |
+          RESPONSE=$(curl -sS -m 120 -w "\nHTTP_STATUS:%{http_code}" \
+            -X POST "${{ secrets.LEADOS_BASE_URL }}/api/cron/tick?secret=${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" || true)
+          echo "$RESPONSE"
+          # 200 = نجاح، أي حالة أخرى (خصوصًا 401) = فشل صريح
+          echo "$RESPONSE" | grep -q "HTTP_STATUS:200" || echo "::warning::tick did not return 200"
