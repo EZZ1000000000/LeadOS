@@ -1,8 +1,8 @@
 {
   "crons": [
     {
-      "path": "/api/cron/tick?max=5",
-      "schedule": "*/5 * * * *"
+      "path": "/api/cron/tick",
+      "schedule": "0 7 * * *"
     }
   ]
 }

@@ -47,6 +47,10 @@
    RSS
    DIRECTORY
    OTHER
+   MANUAL
+   SOCIAL
+   DISCOVERY
+   REFERRAL
  }
 
  enum SourceStatus {
@@ -200,6 +204,7 @@
    VLLM
    ZAI
    OTHER
+   HEURISTIC
  }
 
  enum AiRunType {

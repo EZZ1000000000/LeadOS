@@ -4,13 +4,16 @@ import { json, jsonError } from "@/lib/api-helpers"
 
 /**
  * Orchestrator tick endpoint — designed for external cron (cron-job.org / Vercel Cron).
- * Auth: `x-cron-secret` header or `?secret=` matching CRON_SECRET env, OR an authenticated session.
+ * Auth: `x-cron-secret` header, `Authorization: Bearer <CRON_SECRET>` (Vercel Cron),
+ * `?secret=` matching CRON_SECRET env, OR an authenticated session.
  * Keep maxJobs small so the endpoint finishes well inside serverless timeouts.
  */
 async function handle(req: Request) {
   const url = new URL(req.url)
   const secret = process.env.CRON_SECRET
-  const provided = req.headers.get("x-cron-secret") ?? url.searchParams.get("secret")
+  const authHeader = req.headers.get("authorization") ?? ""
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null
+  const provided = req.headers.get("x-cron-secret") ?? bearer ?? url.searchParams.get("secret")
   const authorized = (secret && provided === secret) || Boolean(await getSessionUser())
   if (!authorized) return jsonError("غير مصرح", 401)
 
