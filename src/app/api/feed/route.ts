@@ -1,12 +1,14 @@
 import { db } from "@/lib/db"
 import { json, requireAuth, isResponse } from "@/lib/api-helpers"
 import { CONTENT_TYPE_LABELS, INTERACTION_TYPE_LABELS } from "@/lib/constants"
+import { segmentFilter } from "@/lib/monitors/segments"
 
 export async function GET(req: Request) {
   const auth = await requireAuth()
   if (isResponse(auth)) return auth
   const url = new URL(req.url)
   const limit = Math.min(80, Number(url.searchParams.get("limit") ?? 40))
+  const seg = segmentFilter(url.searchParams.get("panel"))
 
   const [contents, activities] = await Promise.all([
     db.contentItem.findMany({
@@ -16,7 +18,10 @@ export async function GET(req: Request) {
       take: limit,
     }),
     db.activity.findMany({
-      where: { workspaceId: auth.workspace.id },
+      where: {
+        workspaceId: auth.workspace.id,
+        ...(seg ? { lead: { segment: seg as never } } : {}),
+      },
       include: { lead: { include: { business: { select: { name: true } } } }, user: { select: { name: true } } },
       orderBy: { occurredAt: "desc" },
       take: limit,

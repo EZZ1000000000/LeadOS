@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client"
 import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
 import { asArray } from "@/lib/constants"
 import { recomputeLeadScore } from "@/lib/scoring"
+import { segmentFilter } from "@/lib/monitors/segments"
 
 export async function GET(req: Request) {
   const auth = await requireAuth()
@@ -16,9 +17,12 @@ export async function GET(req: Request) {
   const industry = url.searchParams.get("industry")
   const city = url.searchParams.get("city")
   const minScore = url.searchParams.get("minScore")
+  const panel = url.searchParams.get("panel")
   const limit = Math.min(100, Number(url.searchParams.get("limit") ?? 60))
 
   const where: Prisma.LeadWhereInput = { workspaceId: wsId }
+  const seg = segmentFilter(panel)
+  if (seg) where.segment = seg as never
   if (status && status !== "ALL") where.status = status as never
   if (temperature && temperature !== "ALL") where.temperature = temperature as never
   if (source && source !== "ALL") where.leadSourceType = source as never

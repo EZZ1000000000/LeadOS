@@ -154,6 +154,31 @@ export const USER_ROLE_LABELS: Record<string, string> = {
 
 export const WORKSPACE_ROLES = ["OWNER", "ADMIN", "MEMBER", "VIEWER"] as const
 
+// ---- اللوحتين (Panel Segments) ----
+export const SEGMENTS = ["CARDS", "AGENCY", "BOTH"] as const
+export type SegmentValue = (typeof SEGMENTS)[number]
+export const SEGMENT_LABELS: Record<string, string> = {
+  CARDS: "نظام الكروت",
+  AGENCY: "الأجنسي",
+  BOTH: "اللوحتين",
+}
+
+export const GROUP_PLATFORMS = ["FACEBOOK", "TELEGRAM", "REDDIT", "X"] as const
+export const GROUP_PLATFORM_LABELS: Record<string, string> = {
+  FACEBOOK: "فيسبوك", TELEGRAM: "تليجرام", REDDIT: "ريديت", X: "X / تويتر", OTHER: "أخرى",
+}
+
+export const GROUP_STATUSES = ["ACTIVE", "PAUSED", "NEEDS_SESSION", "BLOCKED", "ARCHIVED"] as const
+export const GROUP_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "يعمل", PAUSED: "موقوف", NEEDS_SESSION: "محتاج جلسة",
+  BLOCKED: "محجوب", ARCHIVED: "مؤرشف",
+}
+
+export const POST_STATUSES = ["NEW", "QUALIFIED", "REJECTED", "CONVERTED"] as const
+export const POST_STATUS_LABELS: Record<string, string> = {
+  NEW: "جديد", QUALIFIED: "مؤهل", REJECTED: "مرفوض", CONVERTED: "محوّل لعميل",
+}
+
 // ---- Lead Scoring thresholds (per doc §14) ----
 export function temperatureFromScore(score: number): string {
   if (score >= 90) return "HOT"

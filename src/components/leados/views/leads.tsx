@@ -34,7 +34,7 @@ const SAVED_VIEWS: Array<{ name: string; filters: Record<string, string> }> = [
   { name: "Score فوق 80", filters: { minScore: "80" } },
 ]
 
-export function LeadsView({ onOpenLead }: { onOpenLead: (id: string) => void }) {
+export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (id: string) => void }) {
   const [q, setQ] = useState("")
   const [status, setStatus] = useState("ALL")
   const [temperature, setTemperature] = useState("ALL")
@@ -44,13 +44,14 @@ export function LeadsView({ onOpenLead }: { onOpenLead: (id: string) => void }) 
 
   const query = useMemo(() => {
     const p = new URLSearchParams()
+    p.set("panel", panel)
     if (q) p.set("q", q)
     if (status !== "ALL") p.set("status", status)
     if (temperature !== "ALL") p.set("temperature", temperature)
     if (source !== "ALL") p.set("source", source)
     if (Number(minScore) > 0) p.set("minScore", minScore)
     return `/api/leads?${p.toString()}`
-  }, [q, status, temperature, source, minScore])
+  }, [q, status, temperature, source, minScore, panel])
 
   const { data, loading, refresh } = useApi<{ leads: LeadRow[]; facets: { industries: string[]; cities: string[] } }>(query)
 

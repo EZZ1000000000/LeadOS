@@ -1,10 +1,13 @@
 import { db } from "@/lib/db"
 import { json, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
+import { segmentFilter } from "@/lib/monitors/segments"
 
-export async function GET() {
+export async function GET(req: Request) {
   const auth = await requireAuth()
   if (isResponse(auth)) return auth
   const wsId = auth.workspace.id
+  const panel = new URL(req.url).searchParams.get("panel")
+  const seg = segmentFilter(panel)
 
   const pipeline = await db.pipeline.findFirst({
     where: { workspaceId: wsId },
@@ -17,7 +20,11 @@ export async function GET() {
   PIPELINE_ORDER.forEach((st) => { statusToStage[st] = LEAD_STATUS_LABELS[st] ?? st })
 
   const leads = await db.lead.findMany({
-    where: { workspaceId: wsId, status: { notIn: ["ARCHIVED"] } },
+    where: {
+      workspaceId: wsId,
+      status: { notIn: ["ARCHIVED"] },
+      ...(seg ? { segment: seg as never } : {}),
+    },
     include: {
       business: { select: { name: true, city: true, industry: true } },
       opportunities: { select: { title: true, score: true }, take: 2 },

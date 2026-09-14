@@ -1,5 +1,5 @@
 "use client";
-// LeadOS — App shell: sidebar + topbar + view switching (SPA within /)
+// LeadOS — App shell: لوحتين (كروت/أجنسي) + sidebar + topbar + view switching (SPA within /)
 import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -18,14 +18,16 @@ import { AgentView } from "./views/agent"
 import { AnalyticsView } from "./views/analytics"
 import { TasksView } from "./views/tasks"
 import { SettingsView } from "./views/settings"
+import { GroupsView } from "./views/groups"
 import {
   LayoutDashboard, Radar, Users, KanbanSquare, FlaskConical, Database,
   SlidersHorizontal, Bot, BarChart3, CheckSquare, Settings, LogOut,
-  Crosshair, Bell, RefreshCw,
+  Crosshair, Bell, RefreshCw, MessageSquareDot, Coffee, Megaphone,
 } from "lucide-react"
 
 const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { key: "overview", label: "نظرة عامة", icon: LayoutDashboard },
+  { key: "groups", label: "تحدي الجروبات", icon: MessageSquareDot },
   { key: "feed", label: "البث المباشر", icon: Radar },
   { key: "leads", label: "العملاء المحتملون", icon: Users },
   { key: "pipeline", label: "خط المبيعات", icon: KanbanSquare },
@@ -39,11 +41,26 @@ const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ clas
   { key: "settings", label: "الإعدادات", icon: Settings },
 ]
 
+export type Panel = "CARDS" | "AGENCY"
+
 export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [view, setView] = useState<ViewKey>("overview")
   const [leadId, setLeadId] = useState<string | null>(null)
   const [unread, setUnread] = useState(0)
   const [ticking, setTicking] = useState(false)
+  const [panel, setPanel] = useState<Panel>("CARDS")
+
+  // Load persisted panel
+  useEffect(() => {
+    const saved = window.localStorage.getItem("leados:panel")
+    if (saved === "AGENCY" || saved === "CARDS") setPanel(saved)
+  }, [])
+
+  const switchPanel = (p: Panel) => {
+    setPanel(p)
+    setLeadId(null)
+    window.localStorage.setItem("leados:panel", p)
+  }
 
   // Poll unread alerts
   useEffect(() => {
@@ -58,7 +75,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     return () => { stop = true; clearInterval(t) }
   }, [view])
 
-  // Autonomous heartbeat: drive the discovery/research queue every 5 minutes
+  // Autonomous heartbeat: drive the discovery/research queue + group scan every 5 minutes
   // while the app is open (in-sandbox companion to external cron in production).
   useEffect(() => {
     const beat = () => {
@@ -90,8 +107,13 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
     onLogout()
   }
 
+  const panelMeta: Record<Panel, { label: string; sub: string; icon: typeof Coffee }> = {
+    CARDS: { label: "نظام الكروت", sub: "كافيهات وكروت النت", icon: Coffee },
+    AGENCY: { label: "الأجنسي", sub: "تسويق وميديا بينج وبرمجة", icon: Megaphone },
+  }
+
   return (
-    <div className="leados-backdrop flex min-h-screen bg-background" dir="rtl">
+    <div className={cn("leados-backdrop flex min-h-screen bg-background", panel === "CARDS" ? "panel-cards" : "panel-agency")} dir="rtl">
       {/* Sidebar */}
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-l border-sidebar-border bg-sidebar md:flex">
         <div className="flex items-center gap-3 border-b border-sidebar-border px-5 py-4">
@@ -150,48 +172,80 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Topbar */}
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur md:px-6">
+        <header className="sticky top-0 z-20 border-b border-border bg-background/80 px-4 py-2.5 backdrop-blur md:px-6">
+          <div className="flex items-center gap-3">
+            {/* ===== زرارين اللوحتين — أعلى الشاشة ===== */}
+            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-border bg-card/70 p-1" role="tablist" aria-label="تبديل اللوحات">
+              {(Object.keys(panelMeta) as Panel[]).map((p) => {
+                const P = panelMeta[p]
+                const Icon = P.icon
+                const active = panel === p
+                return (
+                  <button
+                    key={p}
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => switchPanel(p)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-extrabold transition-all sm:px-3.5 sm:text-[13px]",
+                      active
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    )}
+                    title={P.sub}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="whitespace-nowrap">{P.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <h2 className="hidden text-sm font-bold text-muted-foreground lg:block">
+              {leadId && view === "leads" ? "ملف العميل" : NAV.find((n) => n.key === view)?.label}
+            </h2>
+
+            <div className="ms-auto flex items-center gap-2">
+              <span className="hidden items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary xl:flex">
+                <span className="live-dot h-1.5 w-1.5 rounded-full bg-primary" />
+                نظام الاكتشاف يعمل
+              </span>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={runTick} disabled={ticking}>
+                <RefreshCw className={cn("h-3.5 w-3.5", ticking && "animate-spin")} />
+                <span className="hidden sm:inline">تشغيل دورة اكتشاف</span>
+              </Button>
+              <Button variant="outline" size="icon" className="relative h-8 w-8" aria-label="التنبيهات" onClick={() => setView("overview")}>
+                <Bell className="h-4 w-4" />
+                {unread > 0 && (
+                  <span className="absolute -end-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-0.5 text-[9px] font-bold text-white">
+                    {unread}
+                  </span>
+                )}
+              </Button>
+            </div>
+          </div>
+
           {/* Mobile nav */}
-          <select
-            value={leadId && view === "leads" ? "leads" : view}
-            onChange={(e) => { if (e.target.value === "leads") setLeadId(null); setView(e.target.value as ViewKey) }}
-            className="rounded-lg border border-input bg-card px-2 py-1.5 text-xs md:hidden"
-            aria-label="التنقل"
-          >
-            {NAV.map((n) => <option key={n.key} value={n.key}>{n.label}</option>)}
-          </select>
-
-          <h2 className="hidden text-sm font-bold text-muted-foreground md:block">
-            {leadId && view === "leads" ? "ملف العميل" : NAV.find((n) => n.key === view)?.label}
-          </h2>
-
-          <div className="ms-auto flex items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border border-primary/25 bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary sm:flex">
-              <span className="live-dot h-1.5 w-1.5 rounded-full bg-primary" />
-              نظام الاكتشاف يعمل
-            </span>
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={runTick} disabled={ticking}>
-              <RefreshCw className={cn("h-3.5 w-3.5", ticking && "animate-spin")} />
-              <span className="hidden sm:inline">تشغيل دورة اكتشاف</span>
-            </Button>
-            <Button variant="outline" size="icon" className="relative h-8 w-8" aria-label="التنبيهات" onClick={() => setView("overview")}>
-              <Bell className="h-4 w-4" />
-              {unread > 0 && (
-                <span className="absolute -end-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-0.5 text-[9px] font-bold text-white">
-                  {unread}
-                </span>
-              )}
-            </Button>
+          <div className="pt-2 md:hidden">
+            <select
+              value={leadId && view === "leads" ? "leads" : view}
+              onChange={(e) => { if (e.target.value === "leads") setLeadId(null); setView(e.target.value as ViewKey) }}
+              className="w-full rounded-lg border border-input bg-card px-2 py-1.5 text-xs"
+              aria-label="التنقل"
+            >
+              {NAV.map((n) => <option key={n.key} value={n.key}>{n.label}</option>)}
+            </select>
           </div>
         </header>
 
         <main className="min-h-0 flex-1 p-4 md:p-6">
-          {view === "overview" && <OverviewView onOpenLead={openLead} onGoTo={(v) => setView(v)} />}
-          {view === "feed" && <FeedView onOpenLead={openLead} />}
+          {view === "overview" && <OverviewView panel={panel} onOpenLead={openLead} onGoTo={(v) => setView(v)} />}
+          {view === "groups" && <GroupsView panel={panel} onOpenLead={openLead} />}
+          {view === "feed" && <FeedView panel={panel} onOpenLead={openLead} />}
           {view === "leads" && (leadId
             ? <LeadProfileView leadId={leadId} onBack={() => setLeadId(null)} />
-            : <LeadsView onOpenLead={openLead} />)}
-          {view === "pipeline" && <PipelineView onOpenLead={openLead} />}
+            : <LeadsView panel={panel} onOpenLead={openLead} />)}
+          {view === "pipeline" && <PipelineView panel={panel} onOpenLead={openLead} />}
           {view === "research" && <ResearchView onOpenLead={openLead} />}
           {view === "sources" && <SourcesView />}
           {view === "rules" && <RulesView />}

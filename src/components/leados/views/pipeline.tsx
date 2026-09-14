@@ -34,8 +34,8 @@ const STAGE_COLORS: Record<string, string> = {
   WON: "#22c55e", LOST: "#ef4444", NURTURE: "#14b8a6",
 }
 
-export function PipelineView({ onOpenLead }: { onOpenLead: (id: string) => void }) {
-  const { data, loading, refresh } = useApi<{ stages: StageColumn[]; unmatchedCount: number }>("/api/pipeline")
+export function PipelineView({ panel, onOpenLead }: { panel: string; onOpenLead: (id: string) => void }) {
+  const { data, loading, refresh } = useApi<{ stages: StageColumn[]; unmatchedCount: number }>(`/api/pipeline?panel=${panel}`)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
   const { toast } = useToast()

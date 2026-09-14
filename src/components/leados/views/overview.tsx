@@ -38,8 +38,8 @@ function KpiCard({ title, value, icon, tone, onClick }: KpiCardProps) {
   )
 }
 
-export function OverviewView({ onOpenLead, onGoTo }: { onOpenLead: (id: string) => void; onGoTo: (v: ViewKey) => void }) {
-  const { data, loading, error, refresh } = useApi<OverviewData>("/api/overview")
+export function OverviewView({ panel, onOpenLead, onGoTo }: { panel: string; onOpenLead: (id: string) => void; onGoTo: (v: ViewKey) => void }) {
+  const { data, loading, error, refresh } = useApi<OverviewData>(`/api/overview?panel=${panel}`)
   const { toast } = useToast()
 
   const markAllRead = async () => {

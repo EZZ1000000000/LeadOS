@@ -344,6 +344,7 @@
    agentRuns     AgentRun[]
    searchMemories SearchMemory[]
    agentInsights AgentInsight[]
+   monitoredGroups MonitoredGroup[]
  }
 
  model WorkspaceMember {
@@ -696,6 +697,7 @@
    status           LeadStatus        @default(NEW)
    temperature      LeadTemperature   @default(UNKNOWN)
    intent           IntentLevel       @default(UNKNOWN)
+   segment          String            @default("AGENCY") // LeadSegment: CARDS | AGENCY | BOTH
    leadSourceType   LeadSourceType
    score            Int               @default(0)
    intentScore      Int               @default(0)
@@ -736,6 +738,7 @@
 
    @@index([workspaceId, status, score])
    @@index([workspaceId, leadSourceType, createdAt])
+   @@index([workspaceId, segment, score])
    @@index([workspaceId, temperature, intent])
    @@index([assignedToId, status])
    @@index([nextFollowUpAt])
@@ -1284,4 +1287,63 @@
    workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
    @@index([workspaceId, kind, weight])
+ }
+
+// ══════════ Group Monitor — تحدي الجروبات ══════════
+// مراقبة جروبات فيسبوك/تليجرام/ريديت/… حيث ينشر الناس طلبات الخدمات،
+// مع تصنيف كل بوست للوحة الصحيحة (كروت النت / الأجنسي) وتحويله لعميل.
+
+/// جروب/قناة/مجتمع مراقَب — يُكتشف آليًا أو يُضاف يدويًا
+ model MonitoredGroup {
+   id             String    @id @default(cuid())
+   workspaceId    String
+   platform       String // GROUP_PLATFORM: FACEBOOK | TELEGRAM | REDDIT | X | OTHER
+   name           String
+   url            String
+   externalId     String // معرّف الجروب / subreddit / معرف القناة
+   segment        String    @default("BOTH") // LeadSegment: CARDS | AGENCY | BOTH
+   status         String    @default("ACTIVE") // GroupStatus: ACTIVE | PAUSED | NEEDS_SESSION | BLOCKED | ARCHIVED
+   statusNote     String?
+   membersText    String?
+   intentScore    Int       @default(0) // 0-100 — مدى ملاءمة الجروب لخدماتنا
+   activityScore  Int       @default(0) // 0-100 — نشاط المنشورات الحديثة
+   postCount      Int       @default(0)
+   lastScannedAt  DateTime?
+   lastPostAt     DateTime?
+   notes          String?
+   createdAt      DateTime  @default(now())
+   updatedAt      DateTime  @updatedAt
+
+   workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+   posts     GroupPost[]
+
+   @@unique([workspaceId, platform, externalId])
+   @@index([workspaceId, status])
+   @@index([workspaceId, segment, status])
+   @@index([lastScannedAt])
+ }
+
+/// منشور مُلتقط من داخل جروب مراقَب — يُقيَّم ويُصنَّف ويمكن تحويله لعميل
+ model GroupPost {
+   id              String    @id @default(cuid())
+   groupId         String
+   externalId      String?
+   url             String?
+   author          String?
+   content         String
+   postedAt        DateTime?
+   detectedAt      DateTime  @default(now())
+   score           Int       @default(0) // 0-99 قوة النية
+   segment         String    @default("BOTH") // LeadSegment: CARDS | AGENCY | BOTH
+   matchedKeywords Json?     // string[] الكلمات المفتاحية المطابقة
+   status          String    @default("NEW") // PostStatus: NEW | QUALIFIED | REJECTED | CONVERTED
+   leadId          String?
+   createdAt       DateTime  @default(now())
+
+   group MonitoredGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+   @@unique([groupId, externalId])
+   @@index([groupId, detectedAt])
+   @@index([status, score])
+   @@index([segment, status, detectedAt])
  }

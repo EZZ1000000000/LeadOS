@@ -20,8 +20,8 @@ interface FeedItem {
   leadId: string | null
 }
 
-export function FeedView({ onOpenLead }: { onOpenLead: (id: string) => void }) {
-  const { data, loading, refresh } = useApi<{ feed: FeedItem[] }>("/api/feed?limit=50")
+export function FeedView({ panel, onOpenLead }: { panel: string; onOpenLead: (id: string) => void }) {
+  const { data, loading, refresh } = useApi<{ feed: FeedItem[] }>(`/api/feed?limit=50&panel=${panel}`)
 
   return (
     <Card className="border-border/70">
