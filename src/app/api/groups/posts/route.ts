@@ -16,12 +16,14 @@ export async function GET(req: Request) {
   const limit = Math.min(100, Number(url.searchParams.get("limit") ?? 60))
 
   const where: Prisma.GroupPostWhereInput = { group: { workspaceId: wsId } }
+  const groupWhere: Prisma.MonitoredGroupWhereInput = { workspaceId: wsId }
   if (panel === "CARDS") where.segment = { in: ["CARDS", "BOTH"] }
   if (panel === "AGENCY") where.segment = { in: ["AGENCY", "BOTH"] }
   if (status && status !== "ALL") where.status = status
-  if (platform && platform !== "ALL") where.group = { ...where.group, platform }
+  if (platform && platform !== "ALL") groupWhere.platform = platform
   if (groupId) where.groupId = groupId
   if (minScore > 0) where.score = { gte: minScore }
+  where.group = groupWhere
 
   const posts = await db.groupPost.findMany({
     where,

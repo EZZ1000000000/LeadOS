@@ -178,7 +178,7 @@ export function LoadingBlock({ label = "جارٍ التحميل..." }: { label?:
 
 // ---------- View types ----------
 export type ViewKey =
-  | "overview" | "feed" | "leads" | "pipeline" | "research"
+  | "overview" | "groups" | "feed" | "leads" | "pipeline" | "research"
   | "sources" | "rules" | "chat" | "agent" | "analytics" | "tasks" | "settings"
 
 // ---------- Session user ----------
