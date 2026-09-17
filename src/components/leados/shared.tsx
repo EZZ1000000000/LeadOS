@@ -179,7 +179,7 @@ export function LoadingBlock({ label = "جارٍ التحميل..." }: { label?:
 // ---------- View types ----------
 export type ViewKey =
   | "overview" | "groups" | "feed" | "leads" | "pipeline" | "research"
-  | "sources" | "rules" | "chat" | "agent" | "entity" | "analytics" | "tasks" | "settings"
+  | "sources" | "rules" | "chat" | "agent" | "entity" | "zizo" | "analytics" | "tasks" | "settings"
 
 // ---------- Session user ----------
 export interface Me {

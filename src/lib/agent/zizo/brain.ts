@@ -1,0 +1,440 @@
+// LeadOS — عقل زيزو (بيع ذاتي مستمر)
+// زيزو = كيان بيع: يرد على العملاء بطابع بشري 100%، يتابع الساكت، يبادر مع الليدز الحلوة،
+// يحوّل الكلام لـ«لايف كول محجوز»، ويتعلم من كل تحوّل في المحادثات (ذاكرة دلالية مشتركة).
+// الحلقة: رسالة عميل → رد بشري → متابعة ذكية → مبادرة → حجز → تعلّم.
+import { db } from "@/lib/db"
+import { aiChat, extractJson } from "@/lib/ai"
+import { recordInsight, topInsights } from "@/lib/agent/memory"
+import { zizoPersona, HUMAN_RULES } from "./persona"
+import { SERVICES_DIGEST, servicesHint, zizoConfigOf } from "./services"
+import { humanize, type HumanOut } from "./humanize"
+import { stageLine, pickOpener, detectBooked, inferStage, STAGES, type SaleStage } from "./playbook"
+
+const trunc = (s: unknown, n: number) => String(s ?? "").slice(0, n)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// ─── إرسال واتساب (Evolution API) بتأخير كتابة بشري ───
+function evolutionReady(): boolean {
+  return Boolean(process.env.EVOLUTION_API_URL && process.env.EVOLUTION_API_KEY)
+}
+async function sendWhatsapp(phone: string, body: string, delayMs: number): Promise<boolean> {
+  const base = process.env.EVOLUTION_API_URL
+  const key = process.env.EVOLUTION_API_KEY
+  if (!base || !key) return false
+  const to = phone.replace(/[^\d]/g, "")
+  if (!to) return false
+  // التأخير البشري الحقيقي قبل الإرسال (سقف 8 ثواني عشان الحلقة متعلقش)
+  await sleep(Math.min(delayMs, 8000))
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}/message/sendText/${process.env.EVOLUTION_INSTANCE ?? "leados"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: key },
+      body: JSON.stringify({ number: `${to}@s.whatsapp.net`, text: body }),
+      signal: AbortSignal.timeout(15000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+function detectLang(text: string): "ar" | "en" {
+  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en"
+}
+
+/** هل ردّ زيزو في اللغة الغلط؟ (كسر الطابع البشري — العميلة مصري بيرد إنجليزي تفكير = كارثة) */
+function wrongLang(msgs: string[], lang: "ar" | "en"): boolean {
+  const all = msgs.join(" ")
+  if (!all) return false
+  const latin = (all.match(/[A-Za-z]/g) ?? []).length
+  const arabic = (all.match(/[\u0600-\u06FF]/g) ?? []).length
+  const total = latin + arabic
+  if (total < 20) return false
+  return lang === "ar" ? latin / total > 0.45 : arabic / total > 0.45
+}
+
+// ─── قراءة المحادثة كسطر شات (للبرومبت) ───
+function chatTranscript(msgs: Array<{ author: string; body: string; sentAt: Date }>): string {
+  return msgs
+    .map((m) => `${m.author === "CLIENT" ? "العميل" : m.author === "ZIZO" ? "زيزو" : "موظف"}: ${trunc(m.body, 220)}`)
+    .join("\n")
+}
+
+interface ZizoDraft {
+  msgs?: string[]
+  stage?: string
+  memo?: string
+}
+
+// ─── الرد الذكي: إدخال → رد بشري → حفظ → إرسال → تعلم ───
+export async function zizoReply(wsId: string, conversationId: string): Promise<{
+  ok: boolean
+  note: string
+  msgs: string[]
+  delaysMs: number[]
+  stage?: string
+}> {
+  const conv = await db.conversation.findUnique({
+    where: { id: conversationId },
+    include: {
+      lead: { include: { business: { select: { name: true, city: true, category: true } } } },
+      messages: { orderBy: { sentAt: "asc" }, take: 30 },
+    },
+  })
+  if (!conv || conv.workspaceId !== wsId) return { ok: false, note: "محادثة غير موجودة", msgs: [], delaysMs: [] }
+  const wsSettings = (await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } }))?.settings
+  const cfg = zizoConfigOf(wsSettings)
+
+  const clientMsgs = conv.messages.filter((m) => m.author === "CLIENT")
+  const lastClient = clientMsgs[clientMsgs.length - 1]?.body ?? ""
+  const prevStage = conv.stage
+
+  // ذاكرة زيزو: دروس البيع المتراكمة + ملاحظته عن العميل ده
+  const insights = await topInsights(wsId, 6)
+  const salesIns = insights.filter((i) => ["sales", "positive", "negative"].includes(i.kind))
+  const memoryCtx = [
+    conv.memo ? `ملاحظاتك عن العميل ده: ${conv.memo}` : "",
+    salesIns.length
+      ? `دروس بيع من تجاربك السابقة:\n${salesIns.map((i) => `• ${i.pattern} — ${i.note}`).join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
+  const stageGuide = stageLine(prevStage, conv.lastReplyBy, conv.lastMsgAt)
+  const system = `${zizoPersona({
+    agencyName: cfg.agencyName,
+    servicesDigest: SERVICES_DIGEST,
+    memoryCtx,
+    stageLine: stageGuide,
+  })}\n\n${HUMAN_RULES}`
+  const user = `المحادثة لحد دلوقتي:
+${chatTranscript(conv.messages) || "(لسه مفيش رسايل)"}
+
+${lastClient ? `آخر رسالة من العميل: «${trunc(lastClient, 300)}»` : "العميل لسه ما ردش — المطلوب متابعة منك."}
+${servicesHint(lastClient || conv.memo || "")}
+${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ عليه إنجليزي بنفس الروح." : "ردّ بالمصري الشاتي."}
+
+اكتب ردك (JSON حسب القواعد).`
+
+  const res = await aiChat(
+    [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    { workspaceId: wsId, runType: "AGENT", task: "chat", maxTokens: 750, temperature: 0.75 },
+  )
+  if (!res) return { ok: false, note: "محرك الرد غير متاح حاليًا", msgs: [], delaysMs: [] }
+  let draft = extractJson<ZizoDraft>(res.text)
+  if (!draft?.msgs?.length) {
+    // محاولة إنقاذ: لو رد نصي عادي استخدمه كرسالة واحدة
+    const fallback = res.text.trim().split("\n").filter(Boolean).slice(0, 2)
+    if (!fallback.length) return { ok: false, note: "رد غير مفهوم من المحرك", msgs: [], delaysMs: [] }
+    draft = { msgs: fallback }
+  }
+
+  // فحص اللغة — رد بلغة العميل المكسرة (تفكير إنجليزي لمصري) = إعادة محاولة واحدة بحزم
+  const convLang = (lastClient ? detectLang(lastClient) : (conv.lang as "ar" | "en")) || "ar"
+  if (draft.msgs && wrongLang(draft.msgs, convLang)) {
+    const res2 = await aiChat(
+      [
+        { role: "system", content: system },
+        { role: "user", content: `${user}\n\n⚠ مهم جدًا: ردّك السابق كان في لغة غلط. اكتب ردّك حصريًا ${convLang === "ar" ? "بالعربي المصري الشاتي" : "بالإنجليزي البسيط"} — زي ما واحد شاطر بيتكلم في واتساب، من غير أي تفكير ظاهر.` },
+      ],
+      { workspaceId: wsId, runType: "AGENT", task: "chat", maxTokens: 750, temperature: 0.7 },
+    )
+    const draft2 = res2 ? extractJson<ZizoDraft>(res2.text) : null
+    if (draft2?.msgs?.length && !wrongLang(draft2.msgs, convLang)) draft = draft2
+  }
+
+  const out: HumanOut = humanize(draft.msgs ?? [])
+  if (!out.msgs.length) return { ok: false, note: "الرد طلع فاضي بعد التصفية", msgs: [], delaysMs: [] }
+
+  // المرحلة والموعد — لو زيزو ما صرّحش بيها استنتجناها من كلامه (دراع أمان)
+  const declared = STAGES.includes(draft.stage as SaleStage) ? draft.stage : null
+  const inferred = inferStage(out.msgs, prevStage)
+  const order = ["NEW", "ENGAGED", "INTERESTED", "OFFERED", "OBJECTION", "CALL_BOOKED", "LOST"]
+  const dIdx = declared ? order.indexOf(declared) : -1
+  const iIdx = order.indexOf(inferred)
+  const nextStage = order[Math.max(dIdx, iIdx)] ?? prevStage
+  const booked = detectBooked([...out.msgs, lastClient])
+
+  // إرسال القناة الحقيقية + حفظ الرسايل بتأخيراتها
+  const phone = conv.channel === "WHATSAPP" ? conv.contactHandle ?? "" : ""
+  const sentAt = new Date()
+  let sentOk = 0
+  for (let i = 0; i < out.msgs.length; i++) {
+    const ok = phone && evolutionReady() ? await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i]) : false
+    if (ok) sentOk++
+    await db.message.create({
+      data: {
+        conversationId,
+        direction: "OUT",
+        author: "ZIZO",
+        body: out.msgs[i],
+        sentAt: new Date(sentAt.getTime() + i * 1000),
+        deliverMs: out.delaysMs[i],
+        meta: ok ? { sent: true } : phone ? { sent: false } : { manual: true },
+      },
+    })
+  }
+
+  await db.conversation.update({
+    where: { id: conversationId },
+    data: {
+      stage: nextStage,
+      status: "WAITING_CLIENT",
+      memo: draft.memo ? trunc(`${conv.memo ? conv.memo + " • " : ""}${draft.memo}`, 400) : conv.memo,
+      lastMsgAt: new Date(),
+      lastReplyBy: "ZIZO",
+      msgCount: { increment: out.msgs.length },
+      bookedAt: booked ? conv.bookedAt ?? new Date() : conv.bookedAt,
+      bookedNote: booked && !conv.bookedNote ? booked : conv.bookedNote,
+      lang: lastClient ? detectLang(lastClient) : conv.lang,
+    },
+  })
+
+  // ربط الليد: آخر تواصل + موعد المتابعة
+  if (conv.leadId) {
+    await db.lead.update({
+      where: { id: conv.leadId },
+      data: {
+        lastContactedAt: new Date(),
+        nextFollowUpAt: booked ? new Date(Date.now() + 36 * 3600_000) : new Date(Date.now() + 2 * 24 * 3600_000),
+        nextBestAction: booked ? `لايف كول محجوز: ${trunc(booked, 120)}` : undefined,
+      },
+    }).catch(() => undefined)
+  }
+
+  // التعلّم: كل تحوّل مرحلي = درس تراكمي
+  if (nextStage !== prevStage) {
+    await recordInsight(
+      wsId,
+      "sales",
+      `${prevStage}→${nextStage}`,
+      draft.memo?.slice(0, 160) || `تحول محادثة من ${prevStage} لـ${nextStage}`,
+      { conversationId, sentOk },
+    )
+  }
+
+  return {
+    ok: true,
+    note: `${out.msgs.length} رسالة بشري${sentOk ? ` • ${sentOk} اتبعتت واتساب` : ""} • ${prevStage}→${nextStage}`,
+    msgs: out.msgs,
+    delaysMs: out.delaysMs,
+    stage: nextStage,
+  }
+}
+
+// ─── مواعيد المتابعة الذكية (بشري: مش كل ساعة) ───
+function followDueHours(stage: string): number {
+  switch (stage) {
+    case "OFFERED":
+    case "OBJECTION":
+      return 6
+    case "INTERESTED":
+      return 12
+    case "ENGAGED":
+      return 20
+    default:
+      return 22
+  }
+}
+
+// ─── مبادرة تواصل جديدة مع ليد ───
+export async function zizoOutreach(wsId: string, leadId: string): Promise<{ ok: boolean; note: string; conversationId?: string }> {
+  const lead = await db.lead.findUnique({
+    where: { id: leadId },
+    include: { business: { select: { name: true, city: true, category: true, phone: true } } },
+  })
+  if (!lead || lead.workspaceId !== wsId) return { ok: false, note: "ليد غير موجود" }
+  const existing = await db.conversation.findFirst({ where: { workspaceId: wsId, leadId } })
+  if (existing) return { ok: false, note: "عنده محادثة بالفعل", conversationId: existing.id }
+
+  const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: wsId } }))?.settings)
+  const bizName = lead.business?.name ?? "العميل"
+  const phone = lead.business?.phone ?? ""
+  const channel = phone && evolutionReady() ? "WHATSAPP" : "MANUAL"
+  const hint = (lead.summary || lead.serviceNeeds ? JSON.stringify(lead.serviceNeeds ?? []) : "") || lead.business?.category || ""
+
+  const opener = pickOpener({
+    agency: cfg.agencyName,
+    name: bizName,
+    industry: lead.business?.category ?? "",
+    city: lead.business?.city ?? "",
+    service: hint,
+    hint: hint.slice(0, 60),
+  })
+  const out = humanize([opener])
+
+  const conv = await db.conversation.create({
+    data: {
+      workspaceId: wsId,
+      leadId,
+      channel,
+      contactName: bizName,
+      contactHandle: phone || null,
+      stage: "NEW",
+      status: "WAITING_CLIENT",
+      memo: `مبادرة من زيزو — ليد سكور ${lead.score}`,
+      lastReplyBy: "ZIZO",
+      msgCount: out.msgs.length,
+    },
+  })
+  let sentOk = 0
+  for (let i = 0; i < out.msgs.length; i++) {
+    const ok = channel === "WHATSAPP" ? await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i]) : false
+    if (ok) sentOk++
+    await db.message.create({
+      data: {
+        conversationId: conv.id,
+        direction: "OUT",
+        author: "ZIZO",
+        body: out.msgs[i],
+        deliverMs: out.delaysMs[i],
+        meta: ok ? { sent: true } : { manual: true },
+      },
+    })
+  }
+  await db.lead.update({
+    where: { id: leadId },
+    data: { lastContactedAt: new Date(), nextFollowUpAt: new Date(Date.now() + 22 * 3600_000) },
+  }).catch(() => undefined)
+  await recordInsight(wsId, "sales", "outreach", `افتتاحية لـ${bizName} (${channel}${sentOk ? " • اتبعتت" : " • انتظار إرسال"})`, { leadId })
+  return { ok: true, note: `مبادرة على ${bizName} — ${channel === "WHATSAPP" ? "واتساب" : "إنبوكس يدوي"}`, conversationId: conv.id }
+}
+
+// ─── إضافة رسالة عميل على محادثة موجودة (إنبوكس يدوي/محاكاة) ───
+export async function addClientMessage(wsId: string, conversationId: string, body: string): Promise<boolean> {
+  const text = body.trim()
+  if (!text) return false
+  const conv = await db.conversation.findFirst({ where: { id: conversationId, workspaceId: wsId } })
+  if (!conv) return false
+  await db.message.create({ data: { conversationId, direction: "IN", author: "CLIENT", body: text.slice(0, 2000) } })
+  await db.conversation.update({
+    where: { id: conversationId },
+    data: { status: "NEEDS_REPLY", lastMsgAt: new Date(), lastReplyBy: "CLIENT", msgCount: { increment: 1 }, lang: detectLang(text) },
+  })
+  return true
+}
+
+// ─── النبضة الدائمة: يرد + يتابع + يبادر ───
+export async function zizoTick(wsId: string): Promise<{ replies: number; followups: number; outreaches: number; note: string }> {
+  const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: wsId } }))?.settings)
+  let replies = 0
+  let followups = 0
+  let outreaches = 0
+
+  // 1) محادثات مستنية رد من زيزو
+  const needs = await db.conversation.findMany({
+    where: { workspaceId: wsId, status: "NEEDS_REPLY" },
+    orderBy: { lastMsgAt: "asc" },
+    take: 6,
+    select: { id: true },
+  })
+  for (const c of needs) {
+    const r = await zizoReply(wsId, c.id)
+    if (r.ok) replies++
+    await sleep(1500)
+  }
+
+  // 2) متابعات: زيزو آخر من كلم ومر وقت المتابعة
+  const waiting = await db.conversation.findMany({
+    where: { workspaceId: wsId, status: "WAITING_CLIENT", lastReplyBy: "ZIZO", stage: { in: ["NEW", "ENGAGED", "INTERESTED", "OFFERED", "OBJECTION"] } },
+    orderBy: { lastMsgAt: "asc" },
+    take: 14,
+    select: { id: true, stage: true, lastMsgAt: true },
+  })
+  const now = Date.now()
+  for (const c of waiting) {
+    const due = followDueHours(c.stage)
+    if (now - c.lastMsgAt.getTime() > due * 3600_000) {
+      const r = await zizoReply(wsId, c.id)
+      if (r.ok) followups++
+      if (followups >= 4) break
+      await sleep(1500)
+    }
+  }
+
+  // 3) مبادرات جديدة (بشرية: سقف يومي)
+  const startOfDay = new Date(new Date().setHours(0, 0, 0, 0))
+  const sentToday = await db.conversation.count({ where: { workspaceId: wsId, createdAt: { gte: startOfDay }, stage: "NEW", lastReplyBy: "ZIZO" } })
+  if (cfg.autoOutreach && sentToday < cfg.maxDailyOutreach) {
+    const candidates = await db.lead.findMany({
+      where: {
+        workspaceId: wsId,
+        score: { gte: cfg.minOutreachScore },
+        status: { in: ["NEW", "CONTACTED"] },
+        conversations: { none: {} },
+      },
+      orderBy: { score: "desc" },
+      take: Math.min(cfg.maxDailyOutreach - sentToday, 4),
+      select: { id: true },
+    })
+    for (const l of candidates) {
+      const r = await zizoOutreach(wsId, l.id)
+      if (r.ok) outreaches++
+      await sleep(2500)
+    }
+  }
+
+  const parts = [replies && `${replies} رد`, followups && `${followups} متابعة`, outreaches && `${outreaches} مبادرة`].filter(Boolean)
+  return { replies, followups, outreaches, note: parts.length ? parts.join(" • ") : "مفيش شغل مطلوب دلوقتي" }
+}
+
+// ─── حالة زيزو للواجهة ───
+export async function zizoStatus(wsId: string) {
+  const [open, needsReply, waiting, booked, lost, byStage, fuel, convs] = await Promise.all([
+    db.conversation.count({ where: { workspaceId: wsId, status: { in: ["OPEN", "NEEDS_REPLY", "WAITING_CLIENT"] } } }),
+    db.conversation.count({ where: { workspaceId: wsId, status: "NEEDS_REPLY" } }),
+    db.conversation.count({ where: { workspaceId: wsId, status: "WAITING_CLIENT" } }),
+    db.conversation.count({ where: { workspaceId: wsId, bookedAt: { not: null } } }),
+    db.conversation.count({ where: { workspaceId: wsId, stage: "LOST" } }),
+    db.conversation.groupBy({ by: ["stage"], where: { workspaceId: wsId }, _count: true }),
+    db.lead.count({ where: { workspaceId: wsId, score: { gte: 60 }, conversations: { none: {} }, status: { in: ["NEW", "CONTACTED"] } } }),
+    db.conversation.findMany({
+      where: { workspaceId: wsId },
+      orderBy: { lastMsgAt: "desc" },
+      take: 12,
+      select: {
+        id: true, contactName: true, channel: true, stage: true, status: true, lastMsgAt: true,
+        msgCount: true, bookedAt: true, memo: true,
+        lead: { select: { score: true, business: { select: { name: true, city: true } } } },
+      },
+    }),
+  ])
+  return {
+    open, needsReply, waiting, booked, lost, fuel,
+    stages: byStage.map((s) => ({ stage: s.stage, count: s._count })),
+    conversations: convs,
+    whatsapp: evolutionReady(),
+  }
+}
+
+// ─── إنشاء محادثة جديدة (إنبوكس يدوي أو من واتساب وارد) ───
+export async function openConversation(
+  wsId: string,
+  input: { leadId?: string; channel?: string; externalId?: string; contactName?: string; contactHandle?: string; firstMessage?: string },
+): Promise<{ id: string; needsReply: boolean }> {
+  const contactName = input.contactName?.trim() || (input.leadId ? (await db.lead.findUnique({ where: { id: input.leadId }, select: { business: { select: { name: true } } } }))?.business?.name ?? null : null)
+  const first = input.firstMessage?.trim()
+  const conv = await db.conversation.create({
+    data: {
+      workspaceId: wsId,
+      leadId: input.leadId || null,
+      channel: input.channel || "MANUAL",
+      externalId: input.externalId || null,
+      contactHandle: input.contactHandle || null,
+      contactName,
+      status: first ? "NEEDS_REPLY" : "OPEN",
+      lastMsgAt: new Date(),
+      lastReplyBy: first ? "CLIENT" : null,
+      msgCount: first ? 1 : 0,
+      lang: first ? detectLang(first) : "ar",
+    },
+  })
+  if (first) {
+    await db.message.create({ data: { conversationId: conv.id, direction: "IN", author: "CLIENT", body: first } })
+  }
+  return { id: conv.id, needsReply: Boolean(first) }
+}

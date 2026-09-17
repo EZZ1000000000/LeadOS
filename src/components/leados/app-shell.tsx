@@ -16,6 +16,7 @@ import { RulesView } from "./views/rules"
 import { ChatView } from "./views/chat"
 import { AgentView } from "./views/agent"
 import { EntityView } from "./views/entity"
+import { ZizoView } from "./views/zizo"
 import { AnalyticsView } from "./views/analytics"
 import { TasksView } from "./views/tasks"
 import { SettingsView } from "./views/settings"
@@ -23,7 +24,7 @@ import { GroupsView } from "./views/groups"
 import {
   LayoutDashboard, Radar, Users, KanbanSquare, FlaskConical, Database,
   SlidersHorizontal, Bot, BarChart3, CheckSquare, Settings, LogOut,
-  Crosshair, Bell, RefreshCw, MessageSquareDot, Coffee, Megaphone, BrainCircuit,
+  Crosshair, Bell, RefreshCw, MessageSquareDot, Coffee, Megaphone, BrainCircuit, MessagesSquare,
 } from "lucide-react"
 
 const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ className?: string }> }> = [
@@ -38,6 +39,7 @@ const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ clas
   { key: "chat", label: "AI Commander", icon: Bot },
   { key: "agent", label: "الأيجنت الذكي", icon: Crosshair },
   { key: "entity", label: "الكيان المستقل", icon: BrainCircuit },
+  { key: "zizo", label: "زيزو — كيان البيع", icon: MessagesSquare },
   { key: "analytics", label: "التحليلات", icon: BarChart3 },
   { key: "tasks", label: "المهام", icon: CheckSquare },
   { key: "settings", label: "الإعدادات", icon: Settings },
@@ -254,6 +256,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           {view === "chat" && <ChatView />}
           {view === "agent" && <AgentView onOpenLead={openLead} />}
           {view === "entity" && <EntityView />}
+          {view === "zizo" && <ZizoView />}
           {view === "analytics" && <AnalyticsView />}
           {view === "tasks" && <TasksView onOpenLead={openLead} />}
           {view === "settings" && <SettingsView me={me} />}
