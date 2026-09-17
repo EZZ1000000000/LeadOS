@@ -165,7 +165,7 @@ async function fetchFacebookApify(groupUrl: string): Promise<FetchResult> {
  * وبيستخرج المنشورات من الـDOM، وبيحقن كوكيز الجلسة لو لقا جدار دخول.
  */
 async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
-  const nav = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4 })
+  const nav = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4, session: "fb" })
   if (!nav.ok) {
     return { posts: [], status: "ERROR", note: `الستيلث: ${nav.error?.slice(0, 120) ?? "فشل"}` }
   }
@@ -175,7 +175,7 @@ async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
   if (loginWall && process.env.FACEBOOK_SESSION_COOKIE) {
     const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
     if (injected) {
-      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4 })
+      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4, session: "fb" })
       if (retry.ok) {
         nav.url = retry.url
         nav.text = retry.text
@@ -185,7 +185,7 @@ async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
   if (/محتوى غير متوفر|content isn't available/i.test(nav.text ?? "")) {
     return { posts: [], status: "BLOCKED", note: "الستيلث: الجروب خاص أو محتواه غير متاح" }
   }
-  const items = await stealthExtract({ selector: 'div[role="article"]', limit: 40 })
+  const items = await stealthExtract({ selector: 'div[role="article"]', limit: 40, session: "fb" })
   const seen = new Set<string>()
   const posts: RawPost[] = []
   for (const raw of items.items ?? []) {
