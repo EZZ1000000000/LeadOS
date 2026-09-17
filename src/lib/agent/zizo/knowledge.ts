@@ -224,7 +224,7 @@ export const CLIENT_PRESENCE: ClientPresence[] = [
   {
     id: "ecommerce",
     industry: "متاجر إلكترونية وتجار",
-    keywords: /متجر|متاجر|بيع اونلاين|أونلاين|شوبيفاي|shopify|ايكومرس|ecommerce|تجارة|متجري|ستور/i,
+    keywords: /متجر|متاجر|بيع اونلاين|بيع أونلاين|شوبيفاي|shopify|ايكومرس|ecommerce|تجارة|متجري|ستور/i,
     where: ["r/shopify وr/ecommerce وr/dropshipping", "جروبات فيسبوك للتجار المصريين والعالميين", "أوليكس OLX (اللي بيكبروا منه)", "انستجرام شوبينج"],
     pains: ["نسبة مرتجعات كود مرتفعة", "معدل تحويل ضعيف من الزيارات", "مخزون وشحن بيتداروا يدوي", "سلات متروكة محدش بيرجع لها"],
     bestServices: ["web", "automation", "media", "email", "geo"],
@@ -395,7 +395,7 @@ export const CLIENT_PRESENCE: ClientPresence[] = [
   {
     id: "jewelry",
     industry: "مجوهرات وذهب ومقتنيات",
-    keywords: /مجوهرات|ذهب|فضة|ألماس|جوهرة|jewel|gold|سلسال|خاتم|سوار/i,
+    keywords: /مجوهرات|ذهب|فضة|ألماس|جوهرة|jewel|gold|سلسال|خاتم|سوار|عيار|جرام ذهب|غرام ذهب/i,
     where: ["انستجرام (الأول في المجال)", "جروبات فيسبوك للذهب والمجوهرات", "خرائط جوجل (صقلي/الصاغة)"],
     pains: ["سعر الذهب بيتغير يوميًا والمواقع والإعلانات ثابتة", "تصوير منتج ضعيف بيقتل القطع الفخمة", "الثقة أونلاين صعبة والمشتري خايف"],
     bestServices: ["web", "media", "video", "social"],
@@ -494,7 +494,7 @@ export const CLIENT_PRESENCE: ClientPresence[] = [
   {
     id: "car_services",
     industry: "صيانة سيارات ومغاسل وكفرات",
-    keywords: /صيانة سيارات|ميكانيكي|كهربائي سيارات|مغسلة|زيت|فحص دوري|car ?service|كفرات|عجلات|ورشة/i,
+    keywords: /مغسلة سيارات|ورشة سيارات|صيانة سيارات|ميكانيكي|كهربائي سيارات|مغسلة|زيت|فحص دوري|car ?service|كفرات|عجلات|ورشة/i,
     where: ["خرائط جوجل (المصدر الأول قبل ما العميل يجي)", "جروبات فيسبوك لملكية السيارات بالموديل", "هاتلا2ee وأوليكس"],
     pains: ["الحجز بالميعاد معلق على الشارع", "مفيش سجل صيانة للعميل فيرجع لأي حد", "تقييمات خرايط سلبية بتضيع زباين جداد"],
     bestServices: ["web", "agents", "geo", "automation"],
@@ -562,11 +562,13 @@ export function reachMatrix(): Array<{ id: string; name: string; region: Region;
 export function matchIndustries(text: string): ClientPresence[] {
   if (!text) return []
   const scored = CLIENT_PRESENCE.map((p) => {
-    const hits = text.match(new RegExp(p.keywords.source, "gi"))?.length ?? 0
-    return { p, hits }
+    const matches = text.match(new RegExp(p.keywords.source, "gi")) ?? []
+    // أطول كلمة متطابقة = إشارة أدق — بتكسر التعادل لصالح المجال الأخص
+    const longest = matches.reduce((m, s) => Math.max(m, s.length), 0)
+    return { p, hits: matches.length, longest }
   })
     .filter((x) => x.hits > 0)
-    .sort((a, b) => b.hits - a.hits)
+    .sort((a, b) => (b.hits - a.hits) || (b.longest - a.longest))
     .map((x) => x.p)
   return scored
 }
