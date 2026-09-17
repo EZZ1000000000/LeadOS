@@ -178,21 +178,67 @@ def op_extract(session, selector, attr, limit):
     return {"ok": True, "count": len(items), "items": [i for i in items if i]}
 
 
+def _norm_same_site(v):
+    """توحيد sameSite لصيغة Playwright (Strict/Lax/None) — تصدير Cookie-Editor بييجي no_restriction/lax/strict"""
+    s = str(v or "").strip().lower()
+    if s in ("no_restriction", "none"):
+        return "None"
+    if s == "strict":
+        return "Strict"
+    return "Lax"  # lax + unspecified + فاضي
+
+
 def op_add_cookies(cookies):
+    """حقن كوكيز محافظًا على كل الخصائص — الكوكي من غير secure/sameSite فايرفوكس بيرفضه بصمت!
+    (المشدد في Camoufox: strictSecureCookies — كوكي غير آمن على أصل https بيرمى)
+    لذلك الافتراضي secure=True، وبيقبل expires أو expirationDate (تصدير الإضافات)."""
     W._launch()
     norm = []
     for c in cookies or []:
+        if not c.get("name"):
+            continue
         cc = {
-            "name": c.get("name", ""),
+            "name": c["name"],
             "value": c.get("value", ""),
             "domain": c.get("domain", ".facebook.com"),
             "path": c.get("path", "/"),
+            "secure": bool(c.get("secure", True)),
+            "httpOnly": bool(c.get("httpOnly", False)),
+            "sameSite": _norm_same_site(c.get("sameSite")),
         }
-        if cc["name"]:
-            norm.append(cc)
+        raw_exp = c.get("expires", c.get("expirationDate"))
+        if raw_exp is not None:
+            try:
+                cc["expires"] = int(float(raw_exp))
+            except (TypeError, ValueError):
+                pass  # كوكي جلسة بدون انتهاء
+        norm.append(cc)
     if norm:
         W.ctx.add_cookies(norm)
     return {"ok": True, "added": len(norm)}
+
+
+def op_list_cookies(urls=None):
+    """تشخيص: الجرة الحقيقية من Playwright (مش document.cookie) — القيم مختصرة"""
+    W._launch()
+    try:
+        jar = W.ctx.cookies(urls) if urls else W.ctx.cookies()
+    except BaseException as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:200]}
+    slim = [
+        {
+            "name": c.get("name"),
+            "domain": c.get("domain"),
+            "path": c.get("path"),
+            "secure": c.get("secure"),
+            "httpOnly": c.get("httpOnly"),
+            "sameSite": c.get("sameSite"),
+            "expires": c.get("expires"),
+            "value": str(c.get("value", ""))[:10],
+        }
+        for c in jar
+    ]
+    return {"ok": True, "count": len(slim), "cookies": slim}
 
 
 def op_close(session):
@@ -253,6 +299,7 @@ ROUTES = {
         b.get("session", "default"), b.get("selector"), b.get("attr"), b.get("limit"),
     ),
     "/cookies": lambda b: op_add_cookies(b.get("cookies")),
+    "/jar": lambda b: op_list_cookies(b.get("urls")),
     "/close": lambda b: op_close(b.get("session", "default")),
     "/shutdown": lambda _b: op_shutdown(),
 }
@@ -274,7 +321,15 @@ class Handler(BaseHTTPRequestHandler):
         return not TOKEN or self.headers.get("x-leados-token") == TOKEN
 
     def do_GET(self):
-        if self.path.split("?")[0] != "/health":
+        path = self.path.split("?")[0]
+        if path == "/jar":
+            if not self._authed():
+                return self._send(401, {"ok": False, "error": "unauthorized"})
+            try:
+                return self._send(200, W.call(op_list_cookies, None, timeout=60.0))
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"ok": False, "error": str(e)[:300]})
+        if path != "/health":
             return self._send(404, {"ok": False, "error": "not found"})
         if not self._authed():
             return self._send(401, {"ok": False, "error": "unauthorized"})
