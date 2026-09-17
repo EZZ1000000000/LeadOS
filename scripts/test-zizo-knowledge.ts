@@ -18,14 +18,14 @@ function check(name: string, cond: boolean, extra = "") {
 async function main() {
   console.log("\n━━━ 1) كتالوج الخدمات الموسّع ━━━")
   const { AGENCY_SERVICES } = await import("../src/lib/agent/zizo/services")
-  check(`عدد الخدمات = 16 (فعلًا ${AGENCY_SERVICES.length})`, AGENCY_SERVICES.length === 16)
+  check(`عدد الخدمات = 17 (فعلًا ${AGENCY_SERVICES.length})`, AGENCY_SERVICES.length === 17)
 
   const m1 = matchServices("عايز أدير إعلاناتي على فيسبوك وجوجل وكمان سيو للموقع")
-  check("مطابقة: إعلانات → ميديا بينج أولًا", m1[0]?.id === "media", m1.map((s) => s.id).join(","))
+  check("مطابقة: إعلانات → ميديا بينج أولًا", Boolean(m1[0]?.id === "media"), m1.map((s) => s.id).join(","))
   check("مطابقة: كلام فيه سيو → SEO موجودة", m1.some((s) => s.id === "seo"))
 
   const m2 = matchServices("محتاج نظام ERP لمصنعي ومخازن كبيرة")
-  check("مطابقة: ERP → برمجة وسوفتوير أولًا", m2[0]?.id === "software", m2.map((s) => s.id).join(","))
+  check("مطابقة: ERP → برمجة وسوفتوير أولًا", Boolean(m2[0]?.id === "software"), m2.map((s) => s.id).join(","))
 
   const m3 = matchServices("عايزين أحد نعمل ريلز ونتعامل مع مؤثرين تيك توك")
   check("مطابقة: ريلز/مؤثرين → فيديو أو مؤثرين", m3.some((s) => s.id === "video") && m3.some((s) => s.id === "influencer"))
@@ -38,15 +38,24 @@ async function main() {
 
   console.log("\n━━━ 2) خريطة تواجد العملاء ━━━")
   const i1 = matchIndustries("عيادة أسنان في مدينة نصر محتاجة نظام حجز")
-  check("مطابقة: عيادة أسنان → صناعة العيادات", i1[0]?.id === "clinics", i1.map((i) => i.id).join(","))
+  check("مطابقة: عيادة أسنان → صناعة العيادات", Boolean(i1[0]?.id === "clinics"), i1.map((i) => i.id).join(","))
   check("عيادات: أماكن التواجد فيها خرائط جوجل", i1[0]?.where.some((w) => w.includes("خرائط")))
 
   const i2 = matchIndustries("معرض سيارات وعايز أعلانات على هاتلا2ee")
   check("مطابقة: معرض سيارات", i2.some((i) => i.id === "cars"))
-  check("سيارات: أماكنهم فيها هاتلا2ee", i2.find((i) => i.id === "cars")?.where.some((w) => w.includes("هاتلا2ee")))
+  check("سيارات: أماكنهم فيها هاتلا2ee", Boolean(i2.find((i) => i.id === "cars")?.where.some((w) => w.includes("هاتلا2ee"))))
 
   const i3 = matchIndustries("مطعم بيتزا جديد في الإسكندرية")
-  check("مطابقة: مطعم", i3[0]?.id === "restaurants")
+  check("مطابقة: مطعم", Boolean(i3[0]?.id === "restaurants"))
+
+  console.log("\n━━━ 2.5) خدمة GEO الجديدة ━━━")
+  const mGeo = matchServices("عايز أظهر عيادتي في إجابات ChatGPT وأعمل GEO")
+  check("مطابقة: كلام فيه GEO/ChatGPT → خدمة GEO", mGeo.some((s) => s.id === "geo"), mGeo.map((s) => s.id).join(","))
+  const mGeo2 = matchServices("عايز أظهر عيادتي لما حد يسأل الذكاء الاصطناعي بيرشح مين")
+  check("مطابقة: «الذكاء الاصطناعي بيرشح» → GEO", mGeo2.some((s) => s.id === "geo"))
+  const iClinicGeo = matchIndustries("عيادة أسنان محتاجة حضور أونلاين")
+  check("العيادات خدماتها المفضلة فيها geo", Boolean(iClinicGeo[0]?.bestServices.includes("geo")))
+  check("حقائق السوق فيها حقيقة GEO", (await import("../src/lib/agent/zizo/knowledge")).MARKET_FACTS.some((f) => f.includes("GEO")))
 
   console.log("\n━━━ 3) معرفة السوق للبرومبت ━━━")
   const brief = marketBrief("عيادة جلدية محتاجة أجنت يرد على المرضى")
