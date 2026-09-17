@@ -2,11 +2,60 @@
 // راوتر مهام دقيق: كل مهمة ليها موديلها الأمثل + سلسلة بدائل تلقائية لو وقع/اتملى.
 // الكتالوج مبني على مسح حي كامل لكل موديلات الـAPI (82 موديل → 19 شغال فعليًا):
 //   scripts/nvidia-full-scan.py + scripts/nvidia-retry-timeouts.py
+// مجمع مفاتيح: NVIDIA_API_KEY + NVIDIA_API_KEY_2 (+ أي NVIDIA_API_KEY_N) — توزيع دائري
+// وتبديل فوري للمفتاح التالي عند الـrate-limit (429) أو إسقاط الميت (401/403).
 // كل نداء بيتسجل في AiRun للمراقبة (doc §64).
 import { db } from "@/lib/db"
 
 const NIM_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/$/, "")
-const NIM_KEY = process.env.NVIDIA_API_KEY?.trim() || ""
+
+// ─── مجمع المفاتيح: تبديل تلقائي عند الـrate-limit ───
+// • توزيع دائري: النداءات بالتبادل على المفاتيح عشان الحمل يتوزع والحصص تكتمل أبطأ
+// • 429 → المفتاح يتبرّد دقيقة والنداء بيكمل فورًا بالمفتاح التالي على نفس الموديل
+// • 401/403 → المفتاح ميت ويُشال من التداول نهائيًا
+const KEY_POOL: string[] = Object.entries(process.env)
+  .filter(([k, v]) => /^NVIDIA_API_KEY(_\d+)?$/.test(k) && v && v.trim().length > 20)
+  .map(([, v]) => (v as string).trim())
+
+const keyCooldownUntil = new Map<string, number>()
+const deadKeys = new Set<string>()
+let keyCursor = 0
+
+function noteKeyFailure(key: string, status: number): void {
+  if (status === 401 || status === 403) deadKeys.add(key)
+  else if (status === 429) keyCooldownUntil.set(key, Date.now() + 60_000)
+}
+
+/** المفاتيح الحية بدءًا من المؤشر الدوار (توزيع حمل) — لو كلها مبردة بيجرّب الأول على أي حال */
+function pickKeys(): string[] {
+  const now = Date.now()
+  const alive = KEY_POOL.filter((k) => !deadKeys.has(k))
+  const live = alive.filter((k) => (keyCooldownUntil.get(k) ?? 0) <= now)
+  const pool = live.length ? live : alive.slice(0, 1)
+  if (!pool.length) return []
+  keyCursor = (keyCursor + 1) % pool.length
+  return [...pool.slice(keyCursor), ...pool.slice(0, keyCursor)]
+}
+
+/** حالة مجمع المفاتيح للمراقبة (واجهة الإعدادات) */
+export function keyPoolStatus() {
+  const now = Date.now()
+  return {
+    total: KEY_POOL.length,
+    live: KEY_POOL.filter((k) => !deadKeys.has(k) && (keyCooldownUntil.get(k) ?? 0) <= now).length,
+    dead: deadKeys.size,
+    cooling: [...keyCooldownUntil.values()].filter((t) => t > now).length,
+  }
+}
+
+/** خطاف اختبار داخلي (للسكريبتات فقط): محاكاة ضغط مفتاح والتحقق من التبديل */
+export const _keyPoolTest = {
+  keys: () => [...KEY_POOL],
+  pick: () => [...pickKeys()],
+  cool: (i: number, ms = 60_000) => keyCooldownUntil.set(KEY_POOL[i], Date.now() + ms),
+  kill: (i: number) => deadKeys.add(KEY_POOL[i]),
+  reset: () => { keyCooldownUntil.clear(); deadKeys.clear() },
+}
 
 // ─── المهام التشغيلية (كل مهمة = سلسلة موديلات مرتبة بالأفضل أولًا) ───
 export type AiTask =
@@ -162,12 +211,16 @@ function modelsLive(chain: string[]): string[] {
   return live.length ? live : [chain[0]] // كل السلسلة مبردة → جرب الأمثل على أي حال
 }
 
-async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<AiResult | null> {
+type CallOutcome =
+  | { ok: true; result: AiResult }
+  | { ok: false; status: number } // 0=شبكة، 429=rate، 401/403=مفتاح ميت، الباقي مشكلة موديل/نص فاضي
+
+async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask, key: string): Promise<CallOutcome> {
   const started = Date.now()
   try {
     const res = await fetch(`${NIM_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${NIM_KEY}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model,
         messages,
@@ -177,8 +230,10 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
       signal: AbortSignal.timeout(TASK_TIMEOUT_MS[task]),
     })
     if (!res.ok) {
-      noteFailure(model, res.status)
-      return null
+      // الـ429 يتفصل في الحلقة (مفتاح مضغوط ولا الموديل نفسه؟) — الباقي برّد موديل مباشر
+      if (res.status !== 429) noteFailure(model, res.status)
+      noteKeyFailure(key, res.status)
+      return { ok: false, status: res.status }
     }
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string }>
@@ -186,12 +241,12 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
     }
     const choice = data.choices?.[0]
     const text = (choice?.message?.content ?? "").trim()
-    // مودلات التفكير لو التوكنز خلصت وقت التفكير بترجع فاضية → تعتبر فشل وينتقل للبديل
+    // مودلات التفكير لو التوكنز خلصت وقت التفكير بترجع فاضية → مشكلة موديل (مش مفتاح)
     if (!text) {
       noteFailure(model, choice?.finish_reason === "length" ? 429 : 500)
-      return null
+      return { ok: false, status: 500 }
     }
-    return {
+    const result: AiResult = {
       text,
       provider: "NVIDIA",
       model,
@@ -200,9 +255,10 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
       inputTokens: data.usage?.prompt_tokens,
       outputTokens: data.usage?.completion_tokens,
     }
+    return { ok: true, result }
   } catch {
     noteFailure(model, 0)
-    return null
+    return { ok: false, status: 0 }
   }
 }
 
@@ -233,12 +289,25 @@ async function logRun(result: AiResult, opts: AiCallOptions, success: boolean, e
 
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
   const task: AiTask = opts.task ?? "chat"
-  if (!NIM_KEY) return null
+  if (!KEY_POOL.length) return null
 
   let result: AiResult | null = null
-  for (const model of modelsLive(chainFor(task))) {
-    result = await callNvidia(model, messages, opts, task)
-    if (result) break
+  outer: for (const model of modelsLive(chainFor(task))) {
+    const keys = pickKeys()
+    let rateLimitedAll = true
+    for (const key of keys) {
+      const out = await callNvidia(model, messages, opts, task, key)
+      if (out.ok) {
+        result = out.result
+        break outer
+      }
+      // مشكلة مفتاح (rate/ميت)؟ → المفتاح التالي على نفس الموديل فورًا
+      if (out.status === 429 || out.status === 401 || out.status === 403) continue
+      rateLimitedAll = false
+      break // مشكلة موديل/شبكة → الموديل التالي
+    }
+    // كل المفاتيح ضربت rate-limit على الموديل ده → برّده دقيقة عشان النداء الجاي يبدأ بموديل تاني
+    if (rateLimitedAll) noteFailure(model, 429)
   }
   if (result) void logRun(result, opts, true)
   return result
@@ -260,30 +329,35 @@ export interface AiEmbedResult {
 }
 
 export async function aiEmbed(texts: string[], opts: { inputType?: "query" | "passage" } = {}): Promise<AiEmbedResult | null> {
-  if (!NIM_KEY || !texts.length) return null
+  if (!KEY_POOL.length || !texts.length) return null
   const inputType = opts.inputType ?? "query"
   for (const model of modelsLive(EMBED_CHAIN)) {
-    const started = Date.now()
-    try {
-      const res = await fetch(`${NIM_BASE}/embeddings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${NIM_KEY}` },
-        body: JSON.stringify({ model, input: texts, input_type: inputType, truncate: "END" }),
-        signal: AbortSignal.timeout(30_000),
-      })
-      if (!res.ok) {
-        noteFailure(model, res.status)
-        continue
+    for (const key of pickKeys()) {
+      const started = Date.now()
+      try {
+        const res = await fetch(`${NIM_BASE}/embeddings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+          body: JSON.stringify({ model, input: texts, input_type: inputType, truncate: "END" }),
+          signal: AbortSignal.timeout(30_000),
+        })
+        if (!res.ok) {
+          if (res.status !== 429) noteFailure(model, res.status)
+          noteKeyFailure(key, res.status)
+          if (res.status === 429 || res.status === 401 || res.status === 403) continue // مفتاح تاني على نفس الموديل
+          break // مشكلة موديل → الموديل التالي
+        }
+        const data = (await res.json()) as { data?: Array<{ embedding: number[]; index: number }> }
+        const vecs = (data.data ?? []).sort((a, b) => a.index - b.index).map((d) => d.embedding)
+        if (!vecs.length || !vecs[0].length) {
+          noteFailure(model, 500)
+          break
+        }
+        return { vectors: vecs, model, dim: vecs[0].length, latencyMs: Date.now() - started }
+      } catch {
+        noteFailure(model, 0)
+        break
       }
-      const data = (await res.json()) as { data?: Array<{ embedding: number[]; index: number }> }
-      const vecs = (data.data ?? []).sort((a, b) => a.index - b.index).map((d) => d.embedding)
-      if (!vecs.length || !vecs[0].length) {
-        noteFailure(model, 500)
-        continue
-      }
-      return { vectors: vecs, model, dim: vecs[0].length, latencyMs: Date.now() - started }
-    } catch {
-      noteFailure(model, 0)
     }
   }
   return null
@@ -389,13 +463,15 @@ export function extractJson<T>(text: string): T | null {
 }
 
 export function aiProviderStatus() {
-  const hasKey = Boolean(NIM_KEY)
+  const pool = keyPoolStatus()
+  const hasKey = pool.total > 0
   const tasks = Object.fromEntries(
     (Object.keys(DEFAULT_TASK_CHAINS) as AiTask[]).map((t) => [t, { model: chainFor(t)[0], chain: chainFor(t) }]),
   )
   return {
     nvidia: hasKey && modelsLive(chainFor("chat")).length > 0,
     hasKey,
+    keys: pool,
     base: NIM_BASE,
     // توافق خلفي مع الواجهات القديمة
     models: {
@@ -414,7 +490,7 @@ export function aiProviderStatus() {
     taskLabels: AI_TASK_LABELS,
     cooling: [...cooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
     note: hasKey
-      ? "NVIDIA NIM (مودلات مجانية) — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي"
+      ? `NVIDIA NIM (مودلات مجانية) — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي + مجمع مفاتيح (${pool.live}/${pool.total} حي) بتبديل تلقائي عند الـrate-limit`
       : "أضف NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
   }
 }

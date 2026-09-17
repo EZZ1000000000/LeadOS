@@ -13,6 +13,7 @@ import { USER_ROLE_LABELS } from "@/lib/constants"
 interface SettingsData {
   status: {
     nvidia: boolean; hasKey: boolean
+    keys?: { total: number; live: number; dead: number; cooling: number }
     models: { fast: string; main: string; reason: string }
     tasks?: Record<string, { model: string; chain: string[] }>
     taskLabels?: Record<string, string>
@@ -71,6 +72,11 @@ export function SettingsView({ me }: { me: Me }) {
             <Badge variant="outline" className="border-violet-500/40 text-violet-300">
               راوتر مهام: {data.status.tasks ? Object.keys(data.status.tasks).length : 3} مهمة · كتالوج: {data.status.catalog?.length ?? 0} موديل حي
             </Badge>
+            {data.status.keys && data.status.keys.total > 0 && (
+              <Badge variant="outline" className={data.status.keys.live > 0 ? "border-emerald-500/40 text-emerald-300" : "border-amber-500/40 text-amber-300"}>
+                <KeyRound className="me-1 h-3 w-3" /> مفاتيح: {data.status.keys.live}/{data.status.keys.total} حية{data.status.keys.cooling > 0 ? ` · ${data.status.keys.cooling} بتبرد` : ""}{data.status.keys.dead > 0 ? ` · ${data.status.keys.dead} ميتة` : ""} — تبديل تلقائي عند الـrate-limit
+              </Badge>
+            )}
             <Badge variant="outline" className={data.googleMapsKey ? "border-emerald-500/40 text-emerald-300" : "border-border text-muted-foreground"}>
               <Globe className="me-1 h-3 w-3" /> Google Places: {data.googleMapsKey ? "مفعّل" : "غير مضبوط (اختياري)"}
             </Badge>
