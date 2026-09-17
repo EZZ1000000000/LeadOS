@@ -6,6 +6,14 @@ import { db } from "@/lib/db"
 import { agentWebSearch, placesToItems, runDiscovery, type DiscoveredItem } from "@/lib/discovery"
 import { ingestDiscoveredItems } from "@/lib/queue"
 import { heuristicClassify } from "@/lib/classification"
+import {
+  ensureStealth,
+  stealthAct,
+  stealthExtract,
+  stealthHealth,
+  stealthInjectCookieHeader,
+  stealthNavigate,
+} from "@/lib/agent/stealth-browser"
 
 export interface ToolResult {
   ok: boolean
@@ -252,6 +260,92 @@ export const AGENT_TOOLS: AgentTool[] = [
         note: `تم حفظ ${leads.length} ليد في ${filename} (سكور ≥ ${minScore})`,
         data: { filename, path: `${dir}/${filename}`, count: leads.length },
       }
+    },
+  },
+  {
+    name: "stealth_browse",
+    description:
+      "أيد الستيلث (Camoufox): متصفح Firefox حقيقي مضاد للبصمة يفتح أي موقع — فيسبوك/انستجرام/مواقع محمية — تصفح + استخراج عناصر + تفاعل (كليك/كتابة) + سكرين شوت + حقن كوكيز جلسة",
+    gate: "env",
+    envKeys: ["CAMOUFOX_URL"],
+    run: async (args) => {
+      const url = String(args.url ?? "")
+      const action = String(args.action ?? "goto").toLowerCase()
+      // الحالة فقط
+      if (action === "status") {
+        const h = await stealthHealth()
+        return {
+          ok: h.online,
+          note: h.online ? `الستيلث شغال (${h.browser})` : "خدمة Camoufox غير متاحة",
+          data: h,
+        }
+      }
+      // تشغيل الخدمة تلقائيًا لو معطلة
+      const ready = await ensureStealth(90_000)
+      if (!ready) {
+        return { ok: false, note: "خدمة Camoufox مش متاحة — محتاجة سيرفر يشتغل عليه المتصفح (محليًا بتتشغل تلقائيًا، وعلى Vercel اضبط CAMOUFOX_URL)" }
+      }
+      // حقن كوكيز جلسة فيسبوك لو موجودة (مرة واحدة لكل تشغيل)
+      if (String(args.inject_fb_session ?? "") === "1" && process.env.FACEBOOK_SESSION_COOKIE) {
+        const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
+        if (injected) return { ok: true, note: "تم حقن كوكيز فيسبوك في بروفايل المتصفح" }
+      }
+      if (action === "goto") {
+        if (!/^https?:\/\//.test(url)) return { ok: false, note: "URL غير صالح" }
+        const nav = await stealthNavigate({
+          url,
+          screenshot: Boolean(args.screenshot),
+          scroll_times: Number(args.scroll_times ?? 0),
+          timeout: Number(args.timeout ?? 45_000),
+        })
+        if (!nav.ok) return { ok: false, note: `فشل التصفح: ${nav.error}` }
+        // استخراج اختياري لعناصر في نفس النداء
+        const selector = String(args.selector ?? "")
+        const items = selector ? (await stealthExtract({ selector, limit: Number(args.limit ?? 30) })).items : undefined
+        // سكرين شوت محفوظ كملف
+        let savedShot: string | undefined
+        if (nav.screenshot) {
+          try {
+            const { mkdir, writeFile } = await import("node:fs/promises")
+            const dir = "/home/z/my-project/download/stealth"
+            await mkdir(dir, { recursive: true })
+            const filename = `shot-${Date.now()}.png`
+            await writeFile(`${dir}/${filename}`, Buffer.from(nav.screenshot, "base64"))
+            savedShot = `${dir}/${filename}`
+          } catch {
+            /* Vercel read-only — تجاهل */
+          }
+        }
+        return {
+          ok: true,
+          note: `تم فتح «${(nav.title ?? "").slice(0, 60) || url}» — ${nav.text?.length ?? 0} حرف${savedShot ? " + سكرين شوت" : ""}`,
+          data: { url: nav.url, http_status: nav.http_status, title: nav.title, text: nav.text?.slice(0, 3000), extracted: items?.slice(0, 10), screenshot: savedShot },
+        }
+      }
+      if (action === "extract") {
+        const selector = String(args.selector ?? "")
+        if (!selector) return { ok: false, note: "extract يحتاج selector" }
+        const r = await stealthExtract({ selector, attr: String(args.attr ?? "innerText"), limit: Number(args.limit ?? 30) })
+        return { ok: r.ok, note: r.ok ? `${r.count} عنصر من ${selector.slice(0, 40)}` : `فشل: ${r.error}`, data: r.items?.slice(0, 20) }
+      }
+      if (action === "click" || action === "type" || action === "press" || action === "scroll" || action === "eval" || action === "wait") {
+        const r = await stealthAct({
+          action,
+          selector: String(args.selector ?? "") || undefined,
+          text: String(args.text ?? "") || undefined,
+          key: String(args.key ?? "") || undefined,
+          script: String(args.script ?? "") || undefined,
+          amount: args.amount ? Number(args.amount) : undefined,
+        })
+        return { ok: r.ok, note: r.ok ? r.note ?? "تم التنفيذ" : `فشل: ${r.error}`, data: r.result }
+      }
+      if (action === "cookies") {
+        const header = String(args.cookie_header ?? "") || process.env.FACEBOOK_SESSION_COOKIE || ""
+        if (!header) return { ok: false, note: "لا يوجد cookie_header ولا FACEBOOK_SESSION_COOKIE" }
+        const okDone = await stealthInjectCookieHeader(header, String(args.domain ?? ".facebook.com"))
+        return { ok: okDone, note: okDone ? "تم حقن الكوكيز في المتصفح" : "فشل الحقن" }
+      }
+      return { ok: false, note: `عملية غير معروفة: ${action} (المتاح: goto/extract/click/type/press/scroll/wait/eval/cookies/status)` }
     },
   },
   {

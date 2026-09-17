@@ -6,6 +6,7 @@
 // كل الجالبات ترجع بنفس الشكل: RawPost[] + حالة واضحة.
 
 import { agentWebSearch, parseSearchDate } from "@/lib/discovery"
+import { stealthExtract, stealthInjectCookieHeader, stealthNavigate } from "@/lib/agent/stealth-browser"
 
 export interface RawPost {
   externalId?: string
@@ -158,6 +159,63 @@ async function fetchFacebookApify(groupUrl: string): Promise<FetchResult> {
   }
 }
 
+/**
+ * مسار الستيلث (Camoufox): متصفح حقيقي مضاد للبصمة.
+ * بيتفعل لما الجلب المباشر يفشل (NEEDS_SESSION/ERROR) — بيفتح صفحة الجروب
+ * وبيستخرج المنشورات من الـDOM، وبيحقن كوكيز الجلسة لو لقا جدار دخول.
+ */
+async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
+  const nav = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 2 })
+  if (!nav.ok) {
+    return { posts: [], status: "ERROR", note: `الستيلث: ${nav.error?.slice(0, 120) ?? "فشل"}` }
+  }
+  // جدار دخول؟ حقن كوكيز الجلسة وإعادة محاولة واحدة
+  const finalUrl = nav.url ?? ""
+  const loginWall = /login|checkpoint/i.test(finalUrl) || /تسجيل الدخول|log in to Facebook/i.test(nav.text ?? "")
+  if (loginWall && process.env.FACEBOOK_SESSION_COOKIE) {
+    const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
+    if (injected) {
+      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 2 })
+      if (retry.ok) {
+        nav.url = retry.url
+        nav.text = retry.text
+      }
+    }
+  }
+  if (/محتوى غير متوفر|content isn't available/i.test(nav.text ?? "")) {
+    return { posts: [], status: "BLOCKED", note: "الستيلث: الجروب خاص أو محتواه غير متاح" }
+  }
+  const items = await stealthExtract({ selector: 'div[role="article"]', limit: 40 })
+  const seen = new Set<string>()
+  const posts: RawPost[] = []
+  for (const raw of items.items ?? []) {
+    const content = raw.replace(/\n{2,}/g, "\n").trim()
+    if (content.length < 40) continue
+    const key = hashId(content.slice(0, 200))
+    if (seen.has(key)) continue
+    seen.add(key)
+    // أول سطر غالبًا اسم الكاتب أو الوقت — النص الكامل محفوظ للتصنيف
+    posts.push({
+      externalId: `cf:${key}`,
+      url: groupUrl,
+      content: content.slice(0, 2000),
+    })
+    if (posts.length >= 30) break
+  }
+  const members = (nav.text ?? "").match(/([\d.,]+\s*[KM]?\+?\s*(?:عضو|members?))/i)?.[1]
+  if (!posts.length) {
+    return {
+      posts: [],
+      status: "EMPTY",
+      note: loginWall
+        ? "الستيلث فتح الصفحة بس الجلسة مش قادرة تشوف الجروب"
+        : "الستيلث فتح الجروب بس مفيش منشورات مقروءة في الـDOM",
+      membersText: members,
+    }
+  }
+  return { posts, status: "OK", note: "عبر الستيلث Camoufox", membersText: members }
+}
+
 export async function fetchFacebookGroup(externalId: string, groupUrl: string): Promise<FetchResult> {
   const direct = await fetchFacebookDirect(externalId, true).catch((err) => ({
     posts: [] as RawPost[],
@@ -166,17 +224,23 @@ export async function fetchFacebookGroup(externalId: string, groupUrl: string): 
   }))
   // لو الجلب المباشر نجح أو المشكلة مش هتتحل بأداة تانية — رجّعه
   if (direct.status === "OK" || direct.status === "EMPTY" || direct.status === "BLOCKED") return direct
-  // NEEDS_SESSION/ERROR مع توكن Apify → جرّب Apify
+  // NEEDS_SESSION/ERROR → الستيلث الأول (مجاني ومحلي) وبعدين Apify
+  const stealth = await fetchFacebookStealth(groupUrl)
+  if (stealth.status === "OK") return stealth
   if (process.env.APIFY_TOKEN) {
     const apify = await fetchFacebookApify(groupUrl)
     if (apify.status === "OK") return apify
     return {
       posts: [],
       status: direct.status === "NEEDS_SESSION" ? "NEEDS_SESSION" : "ERROR",
-      note: `${direct.note ?? ""}${apify.note ? ` | ${apify.note}` : ""}`.slice(0, 200),
+      note: `${direct.note ?? ""}${stealth.note ? ` | ${stealth.note}` : ""}${apify.note ? ` | ${apify.note}` : ""}`.slice(0, 200),
     }
   }
-  return direct
+  return {
+    posts: [],
+    status: direct.status === "NEEDS_SESSION" ? "NEEDS_SESSION" : "ERROR",
+    note: `${direct.note ?? ""}${stealth.note ? ` | ${stealth.note}` : ""}`.slice(0, 200),
+  }
 }
 
 // ══════════ Telegram (قنوات/جروبات عامة) ══════════
