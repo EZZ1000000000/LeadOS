@@ -98,21 +98,28 @@ export const AGENT_TOOLS: AgentTool[] = [
     description: "منجم الليدز المحلي: بيزنسات من خرائط جوجل (اسم/تليفون/موقع/تقييم/عنوان) — بيشتغل بمفتاح Serper",
     gate: "ready",
     run: async (args) => {
-      const query = String(args.query ?? "")
+      const query = String(args.query ?? "").replace(/[\n\r"؟]/g, " ").trim().slice(0, 120)
       if (!query) return { ok: false, note: "استعلام مفقود" }
       const limit = Number(args.limit ?? 10)
-      const places = await placesToItems(query, limit)
-      return {
-        ok: places.length > 0,
-        note: `«${query.slice(0, 40)}» → ${places.length} بيزنس من الخرائط`,
-        data: places.map((p) => ({
-          title: p.title,
-          phone: (p.rawData as { phone?: string }).phone,
-          website: (p.rawData as { website?: string }).website,
-          rating: (p.rawData as { rating?: number }).rating,
-          reviews: (p.rawData as { reviewCount?: number }).reviewCount,
-          address: (p.rawData as { address?: string }).address,
-        })),
+      try {
+        const places = await placesToItems(query, limit)
+        return {
+          ok: places.length > 0,
+          note: places.length
+            ? `«${query.slice(0, 40)}» → ${places.length} بيزنس من الخرائط`
+            : `«${query.slice(0, 40)}» → صفر نتائج من الخرائط`,
+          data: places.map((p) => ({
+            title: p.title,
+            phone: (p.rawData as { phone?: string }).phone,
+            website: (p.rawData as { website?: string }).website,
+            rating: (p.rawData as { rating?: number }).rating,
+            reviews: (p.rawData as { reviewCount?: number }).reviewCount,
+            address: (p.rawData as { address?: string }).address,
+          })),
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, note: /credits|400/i.test(msg) ? "رصيد Serper خلص — خرائط جوجل معطلة مؤقتًا، اعتمد على web_search و lead_hunt" : `الخرائط فشلت: ${msg.slice(0, 100)}` }
       }
     },
   },
@@ -191,12 +198,22 @@ export const AGENT_TOOLS: AgentTool[] = [
   },
   {
     name: "lead_hunt",
-    description: "المحرك الكامل: استعلامات → بحث في منصات (خرائط/فيسبوك/انستجرام/لينكدإن/ويب/أخبار...) → تصنيف → تسجيل ليدز في CRM",
+    description: "المحرك الكامل: استعلامات → بحث في منصات → تصنيف → تسجيل ليدز في CRM. المنصات: GOOGLE_MAPS | GOOGLE_SEARCH | FACEBOOK | INSTAGRAM | X | LINKEDIN | REDDIT | TIKTOK | YOUTUBE | DIRECTORY | JOBS | NEWS (مثال: platforms:[\"GOOGLE_SEARCH\",\"FACEBOOK\"])",
     gate: "ready",
     run: async (args) => {
       const wsId = String(args.workspace_id ?? "")
       const queries = (Array.isArray(args.queries) ? args.queries : [args.queries]).map(String).filter(Boolean)
-      const platforms = (Array.isArray(args.platforms) ? args.platforms : ["GOOGLE_SEARCH"]).map(String)
+      // تطبيع المنصات: صيغ عربي/إنجليزي شائعة → الأنواع الصحيحة (وإلا المصدر مش هيتلاقي)
+      const PLATFORM_ALIASES: Record<string, string> = {
+        "ويب": "GOOGLE_SEARCH", "بحث": "GOOGLE_SEARCH", "WEB": "GOOGLE_SEARCH", "GOOGLE": "GOOGLE_SEARCH", "GOOGLE_SEARCH": "GOOGLE_SEARCH",
+        "خرائط": "GOOGLE_MAPS", "الخرائط": "GOOGLE_MAPS", "MAPS": "GOOGLE_MAPS", "GOOGLE_MAPS": "GOOGLE_MAPS",
+        "فيسبوك": "FACEBOOK", "FACEBOOK": "FACEBOOK", "انستجرام": "INSTAGRAM", "انستا": "INSTAGRAM", "INSTAGRAM": "INSTAGRAM",
+        "لينكدإن": "LINKEDIN", "لينكدن": "LINKEDIN", "LINKEDIN": "LINKEDIN", "تويتر": "X", "X": "X", "ريديت": "REDDIT", "REDDIT": "REDDIT",
+        "تيك توك": "TIKTOK", "تيكتوك": "TIKTOK", "TIKTOK": "TIKTOK", "يوتيوب": "YOUTUBE", "YOUTUBE": "YOUTUBE",
+        "أدلة": "DIRECTORY", "ادلة": "DIRECTORY", "DIRECTORY": "DIRECTORY", "وظايف": "JOBS", "JOBS": "JOBS", "أخبار": "NEWS", "اخبار": "NEWS", "NEWS": "NEWS",
+      }
+      const rawPlatforms = (Array.isArray(args.platforms) ? args.platforms : ["GOOGLE_SEARCH"]).map(String).filter(Boolean)
+      const platforms = Array.from(new Set(rawPlatforms.map((p) => PLATFORM_ALIASES[p.trim()] ?? PLATFORM_ALIASES[p.trim().toUpperCase()] ?? p.toUpperCase()))).filter(Boolean)
       if (!wsId || !queries.length) return { ok: false, note: "workspace_id أو queries مفقود" }
       let created = 0, duplicates = 0, scanned = 0
       const perPlatform: Array<{ platform: string; items: number; created: number; topItems: Array<{ title: string; url: string }> }> = []
