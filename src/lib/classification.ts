@@ -133,7 +133,7 @@ export async function classifyContent(
       },
       { role: "user", content: text },
     ],
-    { workspaceId, runType: "CLASSIFICATION", leadId, temperature: 0.1, maxTokens: 500 },
+    { workspaceId, runType: "CLASSIFICATION", leadId, temperature: 0.1, maxTokens: 500, task: "classify" },
   )
   if (result && typeof result.is_lead === "boolean") {
     // Normalize/validate against contract

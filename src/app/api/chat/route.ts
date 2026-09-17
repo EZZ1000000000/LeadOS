@@ -95,7 +95,7 @@ export async function POST(req: Request) {
   let finalText = ""
   let lastToolData: unknown = null
   for (let round = 0; round < 3; round++) {
-    const result = await aiChat(messages, { workspaceId: wsId, runType: "CHAT", temperature: 0.3, maxTokens: 900 })
+    const result = await aiChat(messages, { workspaceId: wsId, runType: "CHAT", temperature: 0.3, maxTokens: 900, task: "chat" })
     if (!result) {
       finalText = round === 0
         ? "معلش، محرك الذكاء الاصطناعي مش متاح حاليًا. جرّب تاني بعد شوية أو استخدم الفلاتر اليدوية من شاشة الـLeads."

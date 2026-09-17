@@ -1,9 +1,16 @@
-// LeadOS — AI Provider Abstraction
-// Priority: GEMINI (مجاني 1500 طلب/يوم) → GROQ (مجاني 14400/يوم) →
-//           Mistral pool (25 مفتاح بدوران) → z-ai SDK → null (احتياطي heuristics)
-// Gemini/Groq يتaktivان تلقائيًا بمجرد وجود GEMINI_API_KEY / GROQ_API_KEY في البيئة
-// Every call is logged as an AiRun for cost tracking (doc §64).
+// LeadOS — AI Provider: NVIDIA NIM (المزود الوحيد للذكاء الاصطناعي)
+// راوتر مهام: كل مهمة بتروح لمودلها المناسب، وكل مودل له سلسلة بدائل لو وقع/اتملى.
+// السلاسل (مختارة بقياس حي على مهام عربية حقيقية — scripts/final-model-eval.py):
+//   FAST   (تصنيف JSON): diffusiongemma-26b → llama-3.2-11b-vision → nemotron-3-super
+//   MAIN   (محادثة/أيجنت/كتابة/بحث): nemotron-3-super-120b → nemotron-3-ultra-550b → gpt-oss-20b
+//   REASON (تحليل عميق): deepseek-v4-flash → nemotron-3-nano-omni-reasoning → nemotron-3-super
+// API متوافقة مع OpenAI — كل نداء بيتسجل في AiRun للمراقبة (doc §64).
 import { db } from "@/lib/db"
+
+const NIM_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/$/, "")
+const NIM_KEY = process.env.NVIDIA_API_KEY?.trim() || ""
+
+export type AiTask = "classify" | "chat" | "compose" | "agent" | "research" | "reason"
 
 export interface AiMessage {
   role: "system" | "user" | "assistant"
@@ -18,6 +25,8 @@ export interface AiCallOptions {
   jobId?: string
   temperature?: number
   maxTokens?: number
+  /** المهمة المطلوبة — بتحدد سلسلة المودلات (افتراضي: main) */
+  task?: AiTask
 }
 
 export interface AiResult {
@@ -25,192 +34,105 @@ export interface AiResult {
   provider: string
   model: string
   latencyMs: number
+  task?: AiTask
   inputTokens?: number
   outputTokens?: number
 }
 
-let zaiInstance: unknown | null = null
-let zaiInitPromise: Promise<unknown> | null = null
-
-async function getZai(): Promise<{ chat: { completions: { create: (b: unknown) => Promise<Record<string, unknown>> } } }> {
-  if (zaiInstance) return zaiInstance as never
-  if (!zaiInitPromise) {
-    const mod = await import("z-ai-web-dev-sdk")
-    const ZAI = mod.default
-    zaiInitPromise = (ZAI as { create: () => Promise<unknown> }).create()
-  }
-  zaiInstance = await zaiInitPromise
-  return zaiInstance as never
+// ─── سلاسل المودلات لكل مهمة (الأول = الأفضل، الباقي بدائل تلقائية) ───
+const TASK_CHAINS: Record<AiTask, "fast" | "main" | "reason"> = {
+  classify: "fast",
+  chat: "main",
+  compose: "main",
+  agent: "main",
+  research: "main",
+  reason: "reason",
 }
 
-// ---- Mistral key pool rotation (25+ keys ⇒ huge rate-limit ceiling) ----
-let mistralKeys: string[] | null = null
-let mistralCursor = 0
-const mistralCooldownUntil = new Map<string, number>() // key → timestamp
-const mistralBanned = new Set<string>()
+const DEFAULT_CHAINS: Record<"fast" | "main" | "reason", string> = {
+  fast: "google/diffusiongemma-26b-a4b-it,meta/llama-3.2-11b-vision-instruct,nvidia/nemotron-3-super-120b-a12b",
+  main: "nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-ultra-550b-a55b,openai/gpt-oss-20b",
+  reason: "deepseek-ai/deepseek-v4-flash-0731,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,nvidia/nemotron-3-super-120b-a12b",
+}
 
-function mistralKeyPool(): string[] {
-  if (mistralKeys) return mistralKeys
-  const pool = (process.env.MISTRAL_API_KEYS ?? "")
+function chainFor(kind: "fast" | "main" | "reason"): string[] {
+  const envKey = kind === "fast" ? "NVIDIA_MODEL_FAST" : kind === "main" ? "NVIDIA_MODEL_MAIN" : "NVIDIA_MODEL_REASON"
+  const raw = process.env[envKey]?.trim()
+  const list = (raw && raw.length > 3 ? raw : DEFAULT_CHAINS[kind])
     .split(",")
-    .map((k) => k.trim())
-    .filter((k) => k.length >= 20)
-  const primary = process.env.MISTRAL_API_KEY?.trim()
-  if (primary && primary.length >= 20 && !pool.includes(primary)) pool.unshift(primary)
-  mistralKeys = pool
-  return pool
+    .map((m) => m.trim())
+    .filter(Boolean)
+  return list.length ? list : [DEFAULT_CHAINS[kind].split(",")[0]]
 }
 
-function nextMistralKey(): string | null {
-  const pool = mistralKeyPool().filter((k) => !mistralBanned.has(k))
-  if (!pool.length) return null
+// تبريد المودلات: 429 → دقيقة، 404/5xx → 10 دقايق، شبكة → 15 ثانية
+const cooldownUntil = new Map<string, number>()
+function noteFailure(model: string, status: number): void {
+  const ms = status === 429 ? 60_000 : status === 404 || status >= 500 ? 600_000 : 15_000
+  cooldownUntil.set(model, Date.now() + ms)
+}
+
+function modelsLive(kind: "fast" | "main" | "reason"): string[] {
   const now = Date.now()
-  const fresh = pool.filter((k) => (mistralCooldownUntil.get(k) ?? 0) <= now)
-  if (fresh.length) {
-    const key = fresh[mistralCursor % fresh.length]
-    mistralCursor++
-    return key
-  }
-  // كل المفاتيح في تبريد — استخدم أقرب واحد هيتفرغ
-  return pool.sort((a, b) => (mistralCooldownUntil.get(a) ?? 0) - (mistralCooldownUntil.get(b) ?? 0))[0]
+  return chainFor(kind).filter((m) => (cooldownUntil.get(m) ?? 0) <= now)
 }
 
-function noteMistralFailure(key: string, status: number): void {
-  if (status === 401 || status === 403) {
-    mistralBanned.add(key) // مفتاح ميت — يُشال نهائيًا
-  } else if (status === 429) {
-    mistralCooldownUntil.set(key, Date.now() + 60_000) // دقيقة تبريد
-  } else {
-    mistralCooldownUntil.set(key, Date.now() + 10_000)
-  }
-}
-
-// ---- OpenAI-compatible free providers (Gemini / Groq) ----
-interface FreeProvider { name: string; baseUrl: string; model: string; maxPerDay: string }
-const FREE_PROVIDERS: FreeProvider[] = [
-  ...(process.env.GEMINI_API_KEY ? [{ name: "GEMINI", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", model: process.env.GEMINI_MODEL || "gemini-2.0-flash", maxPerDay: "1500/يوم مجاني" }] : []),
-  ...(process.env.GROQ_API_KEY ? [{ name: "GROQ", baseUrl: "https://api.groq.com/openai/v1", model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile", maxPerDay: "14400/يوم مجاني" }] : []),
-]
-const freeCooldownUntil = new Map<string, number>() // provider → timestamp
-
-async function callFreeProvider(p: FreeProvider, messages: AiMessage[], opts: AiCallOptions): Promise<AiResult | null> {
-  const key = p.name === "GEMINI" ? process.env.GEMINI_API_KEY : process.env.GROQ_API_KEY
-  if (!key) return null
-  const cooldown = freeCooldownUntil.get(p.name) ?? 0
-  if (cooldown > Date.now()) return null
+async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<AiResult | null> {
   const started = Date.now()
   try {
-    const res = await fetch(`${p.baseUrl}/chat/completions`, {
+    const res = await fetch(`${NIM_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${NIM_KEY}` },
       body: JSON.stringify({
-        model: p.model,
+        model,
         messages,
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 1600,
+        max_tokens: opts.maxTokens ?? (task === "reason" ? 2000 : 1600),
       }),
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(task === "reason" ? 90_000 : 60_000),
     })
     if (!res.ok) {
-      // 429 = حصة/معدل — تبريد دقيقة وينتقل للتابع
-      freeCooldownUntil.set(p.name, Date.now() + (res.status === 429 ? 60_000 : 10_000))
+      noteFailure(model, res.status)
       return null
     }
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
+      choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
     }
-    const text = data.choices?.[0]?.message?.content ?? ""
-    if (!text) return null
-    return { text, provider: p.name, model: p.model, latencyMs: Date.now() - started, inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens }
-  } catch {
-    freeCooldownUntil.set(p.name, Date.now() + 10_000)
-    return null
-  }
-}
-
-async function callMistral(messages: AiMessage[], opts: AiCallOptions): Promise<AiResult | null> {
-  const pool = mistralKeyPool()
-  if (!pool.length) return null
-  const model = process.env.MISTRAL_MODEL || "mistral-small-latest"
-  const attempts = Math.min(3, pool.length)
-  for (let i = 0; i < attempts; i++) {
-    const key = nextMistralKey()
-    if (!key) return null
-    const started = Date.now()
-    try {
-      const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: opts.temperature ?? 0.2,
-          max_tokens: opts.maxTokens ?? 1600,
-        }),
-        signal: AbortSignal.timeout(45000),
-      })
-      if (!res.ok) {
-        noteMistralFailure(key, res.status)
-        continue // جرّب المفتاح اللي بعده فورًا
-      }
-      const data = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-      }
-      const text = data.choices?.[0]?.message?.content ?? ""
-      if (!text) {
-        noteMistralFailure(key, 500)
-        continue
-      }
-      return {
-        text,
-        provider: "MISTRAL",
-        model,
-        latencyMs: Date.now() - started,
-        inputTokens: data.usage?.prompt_tokens,
-        outputTokens: data.usage?.completion_tokens,
-      }
-    } catch {
-      noteMistralFailure(key, 0) // timeout/شبكة — تبريد قصير
+    const choice = data.choices?.[0]
+    const text = (choice?.message?.content ?? "").trim()
+    // مودلات التفكير لو التوكنز خلصت وقت التفكير بترجع فاضية → تعتبر فشل وينتقل للبديل
+    if (!text) {
+      noteFailure(model, choice?.finish_reason === "length" ? 429 : 500)
+      return null
     }
-  }
-  return null
-}
-
-async function callZai(messages: AiMessage[], opts: AiCallOptions): Promise<AiResult | null> {
-  const started = Date.now()
-  try {
-    const zai = await getZai()
-    const data = await zai.chat.completions.create({
-      messages,
-      temperature: opts.temperature ?? 0.2,
-      max_tokens: opts.maxTokens ?? 1600,
-      thinking: { type: "disabled" },
-    })
-    const content =
-      (data as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0]?.message?.content ?? ""
-    if (!content) return null
     return {
-      text: content,
-      provider: "ZAI",
-      model: "glm",
+      text,
+      provider: "NVIDIA",
+      model,
       latencyMs: Date.now() - started,
+      task,
+      inputTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
     }
   } catch {
+    noteFailure(model, 0)
     return null
   }
 }
 
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
+  const task: AiTask = opts.task ?? "chat"
+  const kind = TASK_CHAINS[task]
+  if (!NIM_KEY) return null
+
   let result: AiResult | null = null
-  for (const p of FREE_PROVIDERS) {
-    result = await callFreeProvider(p, messages, opts)
+  for (const model of modelsLive(kind)) {
+    result = await callNvidia(model, messages, opts, task)
     if (result) break
   }
-  if (!result) result = await callMistral(messages, opts)
-  if (!result) result = await callZai(messages, opts)
-  // Log AiRun for observability/cost tracking (best-effort)
+
+  // Log AiRun للمراقبة (best-effort)
   if (result && opts.workspaceId) {
     void db.aiRun
       .create({
@@ -236,7 +158,7 @@ export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): P
 
 /** Chat expecting a JSON object back; extracts the first balanced JSON object. */
 export async function aiChatJson<T>(messages: AiMessage[], opts: AiCallOptions = {}): Promise<T | null> {
-  const result = await aiChat(messages, opts)
+  const result = await aiChat(messages, { ...opts, task: opts.task ?? "classify" })
   if (!result) return null
   return extractJson<T>(result.text)
 }
@@ -269,13 +191,24 @@ export function extractJson<T>(text: string): T | null {
 }
 
 export function aiProviderStatus() {
-  const now = Date.now()
+  const hasKey = Boolean(NIM_KEY)
   return {
-    gemini: Boolean(process.env.GEMINI_API_KEY) && (freeCooldownUntil.get("GEMINI") ?? 0) <= now,
-    groq: Boolean(process.env.GROQ_API_KEY) && (freeCooldownUntil.get("GROQ") ?? 0) <= now,
-    mistral: mistralKeyPool().length > 0,
-    keys: mistralKeyPool().filter((k) => !mistralBanned.has(k)).length,
-    banned: mistralBanned.size,
-    fallback: "z-ai",
+    nvidia: hasKey && modelsLive("main").length > 0,
+    hasKey,
+    base: NIM_BASE,
+    models: {
+      fast: chainFor("fast")[0],
+      main: chainFor("main")[0],
+      reason: chainFor("reason")[0],
+    },
+    chains: {
+      fast: chainFor("fast"),
+      main: chainFor("main"),
+      reason: chainFor("reason"),
+    },
+    cooling: [...cooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
+    note: hasKey
+      ? "NVIDIA NIM (مودلات مجانية) — راوتر مهام تلقائي"
+      : "أضف NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
   }
 }

@@ -11,7 +11,7 @@ import { Bot, KeyRound, Globe, Cloud, ServerCog, Users2, Copy, Building2 } from 
 import { USER_ROLE_LABELS } from "@/lib/constants"
 
 interface SettingsData {
-  status: { mistral: boolean; fallback: string }
+  status: { nvidia: boolean; hasKey: boolean; models: { fast: string; main: string; reason: string }; note: string }
   googleMapsKey: boolean
   stats: {
     totalRuns: number
@@ -58,19 +58,21 @@ export function SettingsView({ me }: { me: Me }) {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className={data.status.mistral ? "border-emerald-500/40 text-emerald-300" : "border-border text-muted-foreground"}>
-              <KeyRound className="me-1 h-3 w-3" /> Mistral API: {data.status.mistral ? "مفعّل" : "غير مضبوط"}
+            <Badge variant="outline" className={data.status.nvidia ? "border-emerald-500/40 text-emerald-300" : "border-border text-muted-foreground"}>
+              <KeyRound className="me-1 h-3 w-3" /> NVIDIA NIM: {data.status.nvidia ? "مفعّل" : "غير مضبوط"}
             </Badge>
             <Badge variant="outline" className="border-violet-500/40 text-violet-300">
-              مزود احتياطي: {data.status.fallback} ✓
+              تصنيف: {data.status.models?.fast?.split("/").pop()} · محادثة: {data.status.models?.main?.split("/").pop()} · تحليل: {data.status.models?.reason?.split("/").pop()}
             </Badge>
             <Badge variant="outline" className={data.googleMapsKey ? "border-emerald-500/40 text-emerald-300" : "border-border text-muted-foreground"}>
               <Globe className="me-1 h-3 w-3" /> Google Places: {data.googleMapsKey ? "مفعّل" : "غير مضبوط (اختياري)"}
             </Badge>
           </div>
           <p className="text-xs leading-6 text-muted-foreground">
-            للترقية إلى Mistral: أضف <code dir="ltr" className="rounded bg-secondary px-1 font-mono text-[10px]">MISTRAL_API_KEY</code> في متغيرات البيئة
-            (Vercel → Settings → Environment Variables). بدون مفتاح، النظام يستخدم المزود المدمج تلقائيًا + المحرك الاستدلالي للكلمات المفتاحية.
+            محرك الذكاء الاصطناعي الوحيد: <code dir="ltr" className="rounded bg-secondary px-1 font-mono text-[10px]">NVIDIA NIM</code> (مودلات مجانية)
+            بمفتاح <code dir="ltr" className="rounded bg-secondary px-1 font-mono text-[10px]">NVIDIA_API_KEY</code> في متغيرات البيئة
+            (Vercel → Settings → Environment Variables). كل مهمة بتروح لمودلها المناسب تلقائيًا (تصنيف سريع / محادثة / تحليل عميق)، ولو مودل وقع بيتحول للبديل تلقائيًا.
+            بدون مفتاح، النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية.
           </p>
           <div className="flex gap-2">
             <Input value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} placeholder="اكتب نص اختبار..." />

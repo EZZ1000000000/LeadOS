@@ -314,7 +314,7 @@ export async function runDeepResearch(
         }),
       },
     ],
-    { workspaceId, runType: "DEEP_RESEARCH", leadId, researchRunId, temperature: 0.3, maxTokens: 700 },
+    { workspaceId, runType: "DEEP_RESEARCH", leadId, researchRunId, temperature: 0.3, maxTokens: 700, task: "research" },
   )
   if (ai) {
     summary = ai.summary ?? ""

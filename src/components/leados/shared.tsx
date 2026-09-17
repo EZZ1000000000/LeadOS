@@ -186,5 +186,5 @@ export interface Me {
   user: { id: string; email: string; name: string; role: string }
   workspace: { id: string; name: string; slug: string }
   memberCount: number
-  ai: { mistral: boolean; fallback: string }
+  ai: { nvidia: boolean; hasKey: boolean; models: { fast: string; main: string; reason: string }; note: string }
 }

@@ -33,7 +33,7 @@ const SUGGESTIONS = [
 ]
 
 export function ChatView() {
-  const { data: sessionsData, refresh: refreshSessions } = useApi<{ sessions: SessionRow[]; ai: { mistral: boolean } }>("/api/chat")
+  const { data: sessionsData, refresh: refreshSessions } = useApi<{ sessions: SessionRow[]; ai: { nvidia: boolean; models?: { main?: string } } }>("/api/chat")
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState("")
@@ -96,7 +96,7 @@ export function ChatView() {
             ))}
           </div>
           <p className="rounded-lg border border-primary/20 bg-primary/5 p-2 text-[10px] leading-5 text-muted-foreground">
-            محرك الذكاء: {sessionsData?.ai.mistral ? "Mistral API ✓" : "مزود مدمج (z-ai)"} — أضف MISTRAL_API_KEY للترقية
+            محرك الذكاء: {sessionsData?.ai.nvidia ? `NVIDIA NIM ✓ (${sessionsData?.ai.models?.main ?? ""})` : "غير مضبوط"} — كل مودلات مجانية عبر راوتر المهام
           </p>
         </CardContent>
       </Card>
