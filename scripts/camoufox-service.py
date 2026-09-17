@@ -21,6 +21,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,6 +30,8 @@ BIND = os.environ.get("CAMOUFOX_BIND", "127.0.0.1")
 TOKEN = os.environ.get("CAMOUFOX_TOKEN", "")
 PROFILE = os.environ.get("CAMOUFOX_PROFILE", os.path.expanduser("~/.leados/camoufox-profile"))
 MAX_TEXT = 80_000
+# إغلاق تلقائي للمتصفح بعد فترة فاضي (يوفر ~800MB على الأجهزة الصغيرة) — 0 = معطّل
+IDLE_SECS = int(os.environ.get("CAMOUFOX_IDLE_SECS", "300"))
 
 
 # ─── عامل المتصفح: كل عمليات Playwright في ثريد واحد (متطلب الـsync API) ───
@@ -39,6 +42,7 @@ class BrowserWorker:
         self.cm = None
         self.pages = {}
         self.booting = False
+        self.last_used = time.time()
         self.thread = threading.Thread(target=self._loop, daemon=True, name="camoufox")
         self.thread.start()
 
@@ -91,6 +95,7 @@ class BrowserWorker:
         print("[camoufox] المتصفح جاهز ✅", flush=True)
 
     def page(self, session="default"):
+        self.last_used = time.time()
         self._launch()
         p = self.pages.get(session)
         if p is None or p.is_closed():
@@ -205,6 +210,36 @@ def op_shutdown():
         os._exit(0)
 
 
+def op_idle_check():
+    """بتشتغل في ثريد العامل: لو المتصفح فاضي مدة أطول من IDLE_SECS يقفل ويحرر الذاكرة.
+    الاستخدام الجاي هيعمل launch تلقائي (البروفايل دائم فالكوكيز بتفضل)."""
+    if IDLE_SECS <= 0 or W.ctx is None:
+        return {"closed": False}
+    idle = time.time() - W.last_used
+    if idle < IDLE_SECS:
+        return {"closed": False, "idle_secs": int(idle)}
+    try:
+        if W.cm:
+            W.cm.__exit__(None, None, None)
+    except BaseException as e:  # noqa: BLE001
+        print(f"[camoufox] إغلاق الفاضي بهدوء فشل: {e}", file=sys.stderr)
+    W.ctx = None
+    W.cm = None
+    W.pages = {}
+    print(f"[camoufox] المتصفح اتقفل بعد فاضي {int(idle)} ث (هيتفتح تلقائيًا عند الطلب) 💤", flush=True)
+    return {"closed": True, "idle_secs": int(idle)}
+
+
+def idle_watchdog():
+    while True:
+        time.sleep(30)
+        if IDLE_SECS > 0:
+            try:
+                W.call(op_idle_check, timeout=60)
+            except BaseException:  # noqa: BLE001
+                pass
+
+
 ROUTES = {
     "/navigate": lambda b: op_navigate(
         b.get("session", "default"), b.get("url"), b.get("wait_until"),
@@ -273,5 +308,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     srv.daemon_threads = True
-    print(f"[camoufox] الخدمة شغالة على http://{BIND}:{PORT} — البروفايل: {PROFILE}", flush=True)
+    threading.Thread(target=idle_watchdog, daemon=True, name="idle-watchdog").start()
+    print(
+        f"[camoufox] الخدمة شغالة على http://{BIND}:{PORT} — البروفايل: {PROFILE}"
+        f" — إغلاق الفاضي بعد {IDLE_SECS}ث",
+        flush=True,
+    )
     srv.serve_forever()
