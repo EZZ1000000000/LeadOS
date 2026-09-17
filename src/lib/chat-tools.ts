@@ -1,11 +1,14 @@
 // LeadOS — AI Commander Tools (doc §5.1, §26, §38-39)
 // The AI plans/analyzes via these whitelisted tools; no raw SQL ever reaches the LLM.
 import type { Prisma } from "@prisma/client"
+import fs from "fs"
+import path from "path"
 import { db } from "@/lib/db"
 import { asArray, LEAD_STATUS_LABELS } from "@/lib/constants"
 import { enqueueJob } from "@/lib/queue"
 import { runAgent } from "@/lib/agent/loop"
 import { lookupSearchMemory, topMemoryQueries } from "@/lib/agent/memory"
+import { aiVision, aiTranslate } from "@/lib/ai"
 
 export interface ToolDef {
   name: string
@@ -25,6 +28,8 @@ export const AI_TOOLS: ToolDef[] = [
   { name: "list_leads", description: "أفضل الـLeads حاليًا مرتبين بـScore", parameters: { limit: "number" } },
   { name: "run_lead_agent", description: "شغّل الأيجنت الذكي على هدف بحث (يستخدم الذاكرة أولاً ثم يصطاد من خرائط جوجل/الويب/فيسبوك/لينكدإن ويسجل ليدز): objective", parameters: { objective: "string", force_fresh: "boolean" } },
   { name: "search_agent_memory", description: "فحص ذاكرة البحث قبل الويب: استعلامات سابقة مشابهة وجودتها وأفضل نتايجها", parameters: { query: "string" } },
+  { name: "analyze_image", description: "حلل صورة أو سكرين شوت بمحرك الرؤية: استخراج شعارات/أرقام/عروض/حالة محل. image = رابط http(s) أو data URL أو latest لآخر سكرين شوت من المتصفح الخفي", parameters: { image: "string", question: "string" } },
+  { name: "translate_text", description: "ترجم نص لأي لغة بمحرك Riva المخصص (مفيد لرسائل العملاء الأجانب): text, target_lang مثل English", parameters: { text: "string", target_lang: "string" } },
 ]
 
 export interface ToolResult {
@@ -193,6 +198,38 @@ export async function executeTool(workspaceId: string, name: string, args: Recor
             : "الذاكرة ما فيهاش استعلام قريب — ينفع تشغيل الأيجنت بصيد جديد",
           data: { hits, topQueries: top.map((m) => ({ query: m.query, quality: m.qualityScore, leads: m.leadCount })) },
         }
+      }
+      case "analyze_image": {
+        let imageUrl = String(args.image ?? "")
+        if (!imageUrl || imageUrl === "latest") {
+          // آخر سكرين شوت حفظها المتصفح الخفي في download/stealth/
+          try {
+            const dir = path.join(process.cwd(), "download", "stealth")
+            const files = fs.readdirSync(dir)
+              .filter((f) => f.endsWith(".png"))
+              .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+              .sort((a, b) => b.t - a.t)
+            if (!files.length) return { ok: false, summary: "مفيش سكرين شوت محفوظة — شغّل stealth_browse الأول أو ابعت رابط صورة" }
+            const b64 = fs.readFileSync(path.join(dir, files[0].f)).toString("base64")
+            imageUrl = `data:image/png;base64,${b64}`
+          } catch {
+            return { ok: false, summary: "تعذر قراءة السكرين شوت — ابعت رابط صورة مباشر" }
+          }
+        } else if (!/^https?:\/\//.test(imageUrl) && !imageUrl.startsWith("data:")) {
+          return { ok: false, summary: "الصورة لازم رابط http(s) أو data URL أو latest لآخر سكرين شوت" }
+        }
+        const question = String(args.question ?? "حلل الصورة: استخرج أي أسماء/أرقام تليفون/عروض/شعارات ووصف الموقف التجاري بإيجاز")
+        const result = await aiVision(question, imageUrl, { workspaceId, runType: "OTHER" })
+        if (!result) return { ok: false, summary: "محرك تحليل الصور مش متاح حاليًا" }
+        return { ok: true, summary: `تحليل الصورة جاهز (${result.model.split("/").pop()})`, data: { analysis: result.text.slice(0, 2000) } }
+      }
+      case "translate_text": {
+        const text = String(args.text ?? "")
+        if (!text) return { ok: false, summary: "اكتب نص للترجمة" }
+        const target = String(args.target_lang ?? "English")
+        const result = await aiTranslate(text, target, { workspaceId, runType: "OTHER" })
+        if (!result) return { ok: false, summary: "محرك الترجمة مش متاح حاليًا" }
+        return { ok: true, summary: `الترجمة لـ${target} جاهزة`, data: { translation: result.text.slice(0, 2000) } }
       }
       default:
         return { ok: false, summary: `أداة غير معروفة: ${name}` }

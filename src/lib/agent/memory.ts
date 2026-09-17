@@ -1,9 +1,10 @@
 // LeadOS — Agent Memory Layer
 // "دوّر على دورك قبل ما تدوّر": كل استعلام يُنفَّذ يُحفظ بنتائجه وجودته،
-// والأيجنت يفحص الذاكرة أولًا (exact + تقارب كلمات) قبل لمس الويب.
+// والأيجنت يفحص الذاكرة أولًا (exact + تقارب كلمات + تقارب دلالي بالإيمبدنج) قبل لمس الويب.
 // ثلاث طبقات: ذاكرة الاستعلام (SearchMemory) + ذاكرة أفضل نتيجة (bestResults) + ذاكرة الاستنتاجات (AgentInsight)
 import { db } from "@/lib/db"
 import type { Prisma } from "@prisma/client"
+import { aiEmbed, cosineSim } from "@/lib/ai"
 
 // ---------- Normalization ----------
 const AR_STOPWORDS = new Set(["في", "من", "على", "عن", "الى", "إلى", "اللي", "دي", "ده", "دا", "عاوذ", "عايز", "محتاج", "محتاجة", "دورلي", "دور", "ابحث", "أبحث", "يجيب", "جيب", "كل", "عام", "عامة", "الجديدة", "جديد", "كويسة", "كويس", "أحسن", "احسن", "مصر", "egypt", "egyptian", "in", "for", "the", "a", "an", "of", "and", "or", "to", "with", "need", "want", "looking", "find", "get", "best"])
@@ -91,6 +92,44 @@ export async function lookupSearchMemory(wsId: string, query: string, opts?: { m
       ageHours: Math.round((Date.now() - r.lastUsedAt.getTime()) / 3600000),
       hitCount: r.hitCount,
     }))
+
+  // ── الطبقة الدلالية: لو المعجمي مش لاقي كفاية → تشابه معنوي بالمتجهات ──
+  // بيفهم إن "عيادات أسنان في مصر الجديدة" و"دكتور أسنان بمدينة نصر" نفس المعنى
+  // حتى لو مفيش كلمة مشتركة — متجهات NVIDIA nemotron-3-embed (best-effort، فشلها مش بيكسر الذاكرة)
+  // العتبة 0.45 مضبوطة قياسيًا: متشابه معنوي ~0.5، غير مرتبط ~0.17 (scripts/test-router-live.ts)
+  if (hits.length < (opts?.limit ?? 5)) {
+    const exact = hits.some((h) => h.similarity >= 1)
+    if (!exact) {
+      try {
+        // ملاحظة قياسية: الموديل nemotron-3-embed بيتقوى في المساحة المتماثلة —
+        // passage×passage = 0.766 لمتشابه معنوي (مقابل query×passage = 0.429) — عشان كده النوعين passage
+        const emb = await aiEmbed([query], { inputType: "passage" })
+        if (emb?.vectors[0]?.length) {
+          const qv = emb.vectors[0]
+          const seen = new Set(hits.map((h) => h.id))
+          const semantic = rows
+            .filter((r) => r.embedding && !seen.has(r.id))
+            .map((r) => ({ r, sim: cosineSim(qv, r.embedding as unknown as number[]) }))
+            .filter(({ sim }) => sim >= 0.45)
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, 3)
+          for (const { r, sim } of semantic) {
+            hits.push({
+              id: r.id, query: r.query, platform: r.platform,
+              similarity: Math.round(sim * 100) / 100,
+              qualityScore: r.qualityScore, leadCount: r.leadCount,
+              bestScore: r.bestScore, resultCount: r.resultCount,
+              bestResults: (r.bestResults as MemoryHit["bestResults"]) ?? [],
+              ageHours: Math.round((Date.now() - r.lastUsedAt.getTime()) / 3600000),
+              hitCount: r.hitCount,
+            })
+          }
+        }
+      } catch {
+        // الإيمبدنج best-effort — المعجمي يكفي لو فشل
+      }
+    }
+  }
   return hits
 }
 
@@ -145,6 +184,10 @@ export async function saveSearchMemory(wsId: string, input: SaveMemoryInput) {
   }
   const quality = computeQualityScore({ ...input, ...merged })
   const mergedBest = mergeBest(existing?.bestResults as SaveMemoryInput["bestResults"], input.bestResults ?? [])
+  // متجه دلالي best-effort (بيعيد استخدام نفس الصف لو المرة الأولى فشلت)
+  const semanticVector = await aiEmbed([input.query], { inputType: "passage" })
+    .then((e) => (e?.vectors[0]?.length ? (e.vectors[0] as unknown as Prisma.InputJsonValue) : undefined))
+    .catch(() => undefined)
   return db.searchMemory.upsert({
     where: { workspaceId_queryHash_platform: { workspaceId: wsId, queryHash: hash, platform: input.platform } },
     create: {
@@ -161,6 +204,7 @@ export async function saveSearchMemory(wsId: string, input: SaveMemoryInput) {
       provider: input.provider,
       bestResults: (mergedBest ?? []) as unknown as Prisma.InputJsonValue,
       insights: (input.insights ?? []) as unknown as Prisma.InputJsonValue,
+      ...(semanticVector !== undefined ? { embedding: semanticVector } : {}),
     },
     update: {
       resultCount: merged.resultCount,
@@ -170,6 +214,7 @@ export async function saveSearchMemory(wsId: string, input: SaveMemoryInput) {
       qualityScore: existing ? Math.max(existing.qualityScore, quality) : quality,
       provider: input.provider ?? existing?.provider,
       bestResults: (mergedBest ?? []) as unknown as Prisma.InputJsonValue,
+      ...(semanticVector !== undefined ? { embedding: semanticVector } : {}),
       hitCount: { increment: 1 },
       lastUsedAt: new Date(),
     },

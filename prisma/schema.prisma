@@ -993,6 +993,7 @@ model SearchMemory {
   provider        String?
   bestResults     Json? // أفضل 10 نتايج مختصرة {title,url,score}
   insights        Json? // ملاحظات مكتسبة
+  embedding       Json? // متجه دلالي (NVIDIA nemotron-3-embed) للبحث المعنوي في الذاكرة
   hitCount        Int      @default(1) // كام مرة اتعاد استخدامه
   lastUsedAt      DateTime @default(now())
   createdAt       DateTime @default(now())

@@ -1,8 +1,9 @@
 // LeadOS — /api/agent/browse (أيد الستيلث Camoufox)
 // GET  → حالة الخدمة والمتصفح
-// POST → تصفح/استخراج/تفاعل عبر المتصفح المضاد للبصمة
+// POST → تصفح/استخراج/تفاعل/تحليل بصري عبر المتصفح المضاد للبصمة
 import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
 import { stealthHealth, stealthNavigate, stealthExtract, stealthAct, ensureStealth } from "@/lib/agent/stealth-browser"
+import { aiVision } from "@/lib/ai"
 
 type Body = Record<string, unknown>
 
@@ -54,7 +55,14 @@ export async function POST(req: Request) {
           /* تجاهل */
         }
       }
-      return json({ ...nav, screenshotPath })
+      // تحليل بصري اختياري للسكرين شوت (رؤية NVIDIA — يسأل عن الصفحة مباشرة)
+      let analysis: string | undefined
+      if (nav.ok && nav.screenshot && body.analyze) {
+        const question = String(body.question ?? "حلل هذه الصفحة: هوية الموقع، أي أرقام تواصل، عروض أو فرص عمل، وحالة النشاط التجاري")
+        const v = await aiVision(question, `data:image/png;base64,${nav.screenshot}`, { workspaceId: auth.workspace.id, runType: "OTHER" })
+        analysis = v?.text.slice(0, 2500)
+      }
+      return json({ ...nav, screenshotPath, analysis })
     }
     if (action === "extract") {
       const selector = String(body.selector ?? "")
@@ -66,6 +74,15 @@ export async function POST(req: Request) {
         session: String(body.session ?? "default"),
       })
       return json(r)
+    }
+    if (action === "analyze") {
+      // تحليل صورة مباشرة (data URL) بمحرك الرؤية — بدون تصفح
+      const image = String(body.image ?? "")
+      if (!image.startsWith("data:")) return jsonError("image لازم data URL (أو استخدم action=goto مع analyze)", 400)
+      const question = String(body.question ?? "حلل الصورة واستخرج أي معلومات مهمة")
+      const v = await aiVision(question, image, { workspaceId: auth.workspace.id, runType: "OTHER" })
+      if (!v) return jsonError("محرك الرؤية مش متاح حاليًا", 502)
+      return json({ ok: true, model: v.model, analysis: v.text.slice(0, 2500), latencyMs: v.latencyMs })
     }
     if (["click", "type", "press", "scroll", "wait", "eval", "screenshot"].includes(action)) {
       const r = await stealthAct({

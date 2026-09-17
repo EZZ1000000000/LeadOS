@@ -1,20 +1,54 @@
 // LeadOS — AI Provider: NVIDIA NIM (المزود الوحيد للذكاء الاصطناعي)
-// راوتر مهام: كل مهمة بتروح لمودلها المناسب، وكل مودل له سلسلة بدائل لو وقع/اتملى.
-// السلاسل (مختارة بقياس حي على مهام عربية حقيقية — scripts/final-model-eval.py):
-//   FAST   (تصنيف JSON): diffusiongemma-26b → llama-3.2-11b-vision → nemotron-3-super
-//   MAIN   (محادثة/أيجنت/كتابة/بحث): nemotron-3-super-120b → nemotron-3-ultra-550b → gpt-oss-20b
-//   REASON (تحليل عميق): deepseek-v4-flash → nemotron-3-nano-omni-reasoning → nemotron-3-super
-// API متوافقة مع OpenAI — كل نداء بيتسجل في AiRun للمراقبة (doc §64).
+// راوتر مهام دقيق: كل مهمة ليها موديلها الأمثل + سلسلة بدائل تلقائية لو وقع/اتملى.
+// الكتالوج مبني على مسح حي كامل لكل موديلات الـAPI (82 موديل → 19 شغال فعليًا):
+//   scripts/nvidia-full-scan.py + scripts/nvidia-retry-timeouts.py
+// كل نداء بيتسجل في AiRun للمراقبة (doc §64).
 import { db } from "@/lib/db"
 
 const NIM_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/$/, "")
 const NIM_KEY = process.env.NVIDIA_API_KEY?.trim() || ""
 
-export type AiTask = "classify" | "chat" | "compose" | "agent" | "research" | "reason"
+// ─── المهام التشغيلية (كل مهمة = سلسلة موديلات مرتبة بالأفضل أولًا) ───
+export type AiTask =
+  | "classify"   // تصنيف بوستات/ليدز JSON سريع
+  | "qualify"    // تقييم وتأهيل ليد (حكم تجاري)
+  | "chat"       // محادثة AI Commander
+  | "agent"      // حلقة أدوات الأيجنت (tool-calling)
+  | "compose"    // صياغة ردود بيع/رسائل واتساب/إيميلات
+  | "creative"   // محتوى إبداعي/بوستات/حملات
+  | "research"   // بحث عميق/تحليل سوق (خلفي يتحمل البطء)
+  | "reason"     // استدلال عميق/قرارات معقدة
+  | "vision"     // تحليل صور/سكرين شوت
+  | "translate"  // ترجمة
+  | "summarize"  // تلخيص محتوى/مقالات
+  | "code"       // توليد/إصلاح كود تكاملات
+  | "moderate"   // فحص سلامة المحتوى قبل الإرسال
+
+export const AI_TASK_LABELS: Record<AiTask, string> = {
+  classify: "تصنيف سريع (JSON)",
+  qualify: "تأهيل الليدز",
+  chat: "محادثة القائد",
+  agent: "أدوات الأيجنت",
+  compose: "صياغة رسائل",
+  creative: "محتوى إبداعي",
+  research: "بحث عميق",
+  reason: "استدلال عميق",
+  vision: "تحليل صور",
+  translate: "ترجمة",
+  summarize: "تلخيص",
+  code: "كود وتكاملات",
+  moderate: "فحص السلامة",
+}
+
+export interface AiContentPart {
+  type: "text" | "image_url"
+  text?: string
+  image_url?: { url: string }
+}
 
 export interface AiMessage {
   role: "system" | "user" | "assistant"
-  content: string
+  content: string | AiContentPart[]
 }
 
 export interface AiCallOptions {
@@ -25,7 +59,7 @@ export interface AiCallOptions {
   jobId?: string
   temperature?: number
   maxTokens?: number
-  /** المهمة المطلوبة — بتحدد سلسلة المودلات (افتراضي: main) */
+  /** المهمة المطلوبة — بتحدد سلسلة الموديلات (افتراضي: chat) */
   task?: AiTask
 }
 
@@ -39,30 +73,80 @@ export interface AiResult {
   outputTokens?: number
 }
 
-// ─── سلاسل المودلات لكل مهمة (الأول = الأفضل، الباقي بدائل تلقائية) ───
-const TASK_CHAINS: Record<AiTask, "fast" | "main" | "reason"> = {
-  classify: "fast",
-  chat: "main",
-  compose: "main",
-  agent: "main",
-  research: "main",
-  reason: "reason",
+// ─── الكتالوج الحي (ممسوح فعليًا من الـAPI — كل موديل شغال له دور) ───
+export interface CatalogEntry {
+  id: string
+  role: string
+  kind: "general" | "reasoning" | "vision" | "creative" | "code" | "translate" | "safety" | "parse" | "embed" | "experimental"
+  latency: string
+  tasks: string[]
 }
 
-const DEFAULT_CHAINS: Record<"fast" | "main" | "reason", string> = {
-  fast: "google/diffusiongemma-26b-a4b-it,meta/llama-3.2-11b-vision-instruct,nvidia/nemotron-3-super-120b-a12b",
-  main: "nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-ultra-550b-a55b,openai/gpt-oss-20b",
-  reason: "deepseek-ai/deepseek-v4-flash-0731,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,nvidia/nemotron-3-super-120b-a12b",
+export const NVIDIA_CATALOG: CatalogEntry[] = [
+  { id: "nvidia/nemotron-3-ultra-550b-a55b", role: "العقل المدبّر — أقوى موديل (550B MoE)", kind: "reasoning", latency: "فوري (616ms)", tasks: ["agent", "reason", "research", "chat"] },
+  { id: "nvidia/nemotron-3-super-120b-a12b", role: "الأساسي — محادثة وكتابة عربية احترافية", kind: "general", latency: "سريع (6s)", tasks: ["chat", "compose", "qualify", "classify", "research", "translate"] },
+  { id: "openai/gpt-oss-20b", role: "متعدد المهام — reasoning + JSON + أدوات", kind: "reasoning", latency: "سريع (2.3s)", tasks: ["classify", "qualify", "summarize", "code", "agent", "chat", "compose"] },
+  { id: "google/diffusiongemma-26b-a4b-it", role: "بطل التصنيف — JSON عربي صارم 100%", kind: "general", latency: "سريع (5s)", tasks: ["classify", "summarize"] },
+  { id: "deepseek-ai/deepseek-v4-flash-0731", role: "المحلل العميق — عربي مصري طبيعي + تفكير منفصل", kind: "reasoning", latency: "متوسط (14s)", tasks: ["research", "reason", "qualify", "compose", "code", "agent"] },
+  { id: "meta/llama-3.2-11b-vision-instruct", role: "عين الأيجنت — تحليل صور وسكرين شوت", kind: "vision", latency: "فوري (940ms)", tasks: ["vision"] },
+  { id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", role: "رؤية + استدلال — بديل بصري شامل (omni)", kind: "vision", latency: "سريع (2.5s)", tasks: ["vision", "reason", "classify"] },
+  { id: "z-ai/glm-5.3-flash", role: "محادثة بديل — Flash سريع نسبيًا", kind: "general", latency: "متوسط (13s)", tasks: ["chat", "summarize", "agent"] },
+  { id: "nvidia/nemotron-3.5-lightning-30b-a3b", role: "احتياط عام — Lightning خفيف", kind: "general", latency: "متوسط (16s)", tasks: [] },
+  { id: "meta/muse-glimmer-30b", role: "الكاتب الإبداعي — محتوى تسويقي وحملات", kind: "creative", latency: "متوسط (27s)", tasks: ["creative"] },
+  { id: "mistralai/mistral-nemotron", role: "احتياط إبداعي/عام", kind: "general", latency: "متوسط (25s)", tasks: ["creative"] },
+  { id: "poolside/laguna-xs-2.1", role: "متخصص كود — بديل برمجي", kind: "code", latency: "بطيء (61s)", tasks: ["code"] },
+  { id: "google/gemma-4-31b-it", role: "طوارئ خلفية — معالجة بحثية تتحمل 2 دقيقة", kind: "general", latency: "خلفي (123s)", tasks: ["research"] },
+  { id: "nvidia/riva-translate-4b-instruct-v2", role: "الترجمة الأساسية", kind: "translate", latency: "فوري (768ms)", tasks: ["translate"] },
+  { id: "nvidia/riva-translate-4b-instruct-v1.1", role: "ترجمة بديلة", kind: "translate", latency: "فوري (491ms)", tasks: ["translate"] },
+  { id: "nvidia/nemotron-3.5-content-safety", role: "حارس المحتوى — فحص سلامة قبل الإرسال", kind: "safety", latency: "فوري (425ms)", tasks: ["moderate"] },
+  { id: "nvidia/llama-3.1-nemoguard-8b-content-safety", role: "حارس محتوى بديل", kind: "safety", latency: "متوسط (24s)", tasks: ["moderate"] },
+  { id: "nvidia/nemotron-parse-2.0", role: "محلل مستندات — غير مستقر في الـAPI المجاني (500) — محجوز", kind: "experimental", latency: "فوري (573ms)", tasks: [] },
+  { id: "nvidia/ising-calibration-1.5-31b", role: "تجريبي بحثي — محجوز عن الإنتاج عمدًا", kind: "experimental", latency: "بطيء (36s)", tasks: [] },
+]
+
+// ─── سلاسل المهام (الأول = الأمثل، الباقي بدائل تلقائية عند فشل/تبريد) ───
+const DEFAULT_TASK_CHAINS: Record<AiTask, string[]> = {
+  classify: ["google/diffusiongemma-26b-a4b-it", "openai/gpt-oss-20b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "nvidia/nemotron-3-super-120b-a12b"],
+  qualify: ["nvidia/nemotron-3-super-120b-a12b", "openai/gpt-oss-20b", "deepseek-ai/deepseek-v4-flash-0731"],
+  chat: ["nvidia/nemotron-3-super-120b-a12b", "z-ai/glm-5.3-flash", "openai/gpt-oss-20b", "nvidia/nemotron-3-ultra-550b-a55b"],
+  agent: ["nvidia/nemotron-3-ultra-550b-a55b", "openai/gpt-oss-20b", "deepseek-ai/deepseek-v4-flash-0731", "z-ai/glm-5.3-flash"],
+  compose: ["nvidia/nemotron-3-super-120b-a12b", "deepseek-ai/deepseek-v4-flash-0731", "openai/gpt-oss-20b"],
+  creative: ["meta/muse-glimmer-30b", "nvidia/nemotron-3-super-120b-a12b", "mistralai/mistral-nemotron"],
+  research: ["deepseek-ai/deepseek-v4-flash-0731", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b", "google/gemma-4-31b-it"],
+  reason: ["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "deepseek-ai/deepseek-v4-flash-0731"],
+  vision: ["meta/llama-3.2-11b-vision-instruct", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"],
+  translate: ["nvidia/riva-translate-4b-instruct-v2", "nvidia/riva-translate-4b-instruct-v1.1", "nvidia/nemotron-3-super-120b-a12b"],
+  summarize: ["openai/gpt-oss-20b", "z-ai/glm-5.3-flash", "google/diffusiongemma-26b-a4b-it"],
+  code: ["openai/gpt-oss-20b", "poolside/laguna-xs-2.1", "deepseek-ai/deepseek-v4-flash-0731"],
+  moderate: ["nvidia/nemotron-3.5-content-safety", "nvidia/llama-3.1-nemoguard-8b-content-safety"],
 }
 
-function chainFor(kind: "fast" | "main" | "reason"): string[] {
-  const envKey = kind === "fast" ? "NVIDIA_MODEL_FAST" : kind === "main" ? "NVIDIA_MODEL_MAIN" : "NVIDIA_MODEL_REASON"
-  const raw = process.env[envKey]?.trim()
-  const list = (raw && raw.length > 3 ? raw : DEFAULT_CHAINS[kind])
+// موديلات الإيمبدنج (نقطة نهاية مختلفة) — للبحث الدلالي في ذاكرة الأيجنت
+const EMBED_CHAIN = ["nvidia/nemotron-3-embed-1b", "nvidia/llama-nemotron-embed-vl-1b-v2"]
+
+// مهلة ومخرجات افتراضية لكل مهمة (مضبوطة على قياسات المسح الحي)
+const TASK_TIMEOUT_MS: Record<AiTask, number> = {
+  classify: 45_000, qualify: 60_000, chat: 60_000, agent: 90_000,
+  compose: 60_000, creative: 120_000, research: 150_000, reason: 150_000,
+  vision: 120_000, translate: 30_000, summarize: 60_000, code: 120_000,
+  moderate: 25_000,
+}
+const TASK_MAX_TOKENS: Record<AiTask, number> = {
+  classify: 250, qualify: 700, chat: 1000, agent: 1200, compose: 900,
+  creative: 1400, research: 2200, reason: 2400, vision: 600, translate: 1200,
+  summarize: 900, code: 1600, moderate: 120,
+}
+
+/** سلسلة مهمة — بتتفصل من env لو موجود (NVIDIA_MODEL_CLASSIFY=...) مع توافق أسماء قديمة */
+export function chainFor(task: AiTask): string[] {
+  const envKey = `NVIDIA_MODEL_${task.toUpperCase()}`
+  const legacyKey = task === "classify" ? "NVIDIA_MODEL_FAST" : task === "chat" ? "NVIDIA_MODEL_MAIN" : task === "reason" ? "NVIDIA_MODEL_REASON" : ""
+  const raw = process.env[envKey]?.trim() || (legacyKey ? process.env[legacyKey]?.trim() : "")
+  const list = (raw && raw.length > 3 ? raw : DEFAULT_TASK_CHAINS[task].join(","))
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean)
-  return list.length ? list : [DEFAULT_CHAINS[kind].split(",")[0]]
+  return list.length ? list : DEFAULT_TASK_CHAINS[task]
 }
 
 // تبريد المودلات: 429 → دقيقة، 404/5xx → 10 دقايق، شبكة → 15 ثانية
@@ -72,9 +156,10 @@ function noteFailure(model: string, status: number): void {
   cooldownUntil.set(model, Date.now() + ms)
 }
 
-function modelsLive(kind: "fast" | "main" | "reason"): string[] {
+function modelsLive(chain: string[]): string[] {
   const now = Date.now()
-  return chainFor(kind).filter((m) => (cooldownUntil.get(m) ?? 0) <= now)
+  const live = chain.filter((m) => (cooldownUntil.get(m) ?? 0) <= now)
+  return live.length ? live : [chain[0]] // كل السلسلة مبردة → جرب الأمثل على أي حال
 }
 
 async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<AiResult | null> {
@@ -86,10 +171,10 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
       body: JSON.stringify({
         model,
         messages,
-        temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? (task === "reason" ? 2000 : 1600),
+        temperature: opts.temperature ?? (task === "classify" || task === "moderate" ? 0.1 : 0.2),
+        max_tokens: opts.maxTokens ?? TASK_MAX_TOKENS[task],
       }),
-      signal: AbortSignal.timeout(task === "reason" ? 90_000 : 60_000),
+      signal: AbortSignal.timeout(TASK_TIMEOUT_MS[task]),
     })
     if (!res.ok) {
       noteFailure(model, res.status)
@@ -121,38 +206,41 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
   }
 }
 
+async function logRun(result: AiResult, opts: AiCallOptions, success: boolean, error?: string): Promise<void> {
+  if (!opts.workspaceId) return
+  try {
+    await db.aiRun.create({
+      data: {
+        workspaceId: opts.workspaceId,
+        type: (opts.runType || "OTHER") as never,
+        provider: result.provider as never,
+        model: result.model,
+        leadId: opts.leadId,
+        researchRunId: opts.researchRunId,
+        jobId: opts.jobId,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        totalTokens: (result.inputTokens ?? 0) + (result.outputTokens ?? 0),
+        latencyMs: result.latencyMs,
+        success,
+        errorMessage: error,
+      },
+    })
+  } catch {
+    // تسجيل best-effort
+  }
+}
+
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
   const task: AiTask = opts.task ?? "chat"
-  const kind = TASK_CHAINS[task]
   if (!NIM_KEY) return null
 
   let result: AiResult | null = null
-  for (const model of modelsLive(kind)) {
+  for (const model of modelsLive(chainFor(task))) {
     result = await callNvidia(model, messages, opts, task)
     if (result) break
   }
-
-  // Log AiRun للمراقبة (best-effort)
-  if (result && opts.workspaceId) {
-    void db.aiRun
-      .create({
-        data: {
-          workspaceId: opts.workspaceId,
-          type: (opts.runType || "OTHER") as never,
-          provider: result.provider as never,
-          model: result.model,
-          leadId: opts.leadId,
-          researchRunId: opts.researchRunId,
-          jobId: opts.jobId,
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens,
-          totalTokens: (result.inputTokens ?? 0) + (result.outputTokens ?? 0),
-          latencyMs: result.latencyMs,
-          success: true,
-        },
-      })
-      .catch(() => undefined)
-  }
+  if (result) void logRun(result, opts, true)
   return result
 }
 
@@ -161,6 +249,116 @@ export async function aiChatJson<T>(messages: AiMessage[], opts: AiCallOptions =
   const result = await aiChat(messages, { ...opts, task: opts.task ?? "classify" })
   if (!result) return null
   return extractJson<T>(result.text)
+}
+
+// ─── الإيمبدنج: تمثيل دلالي للنصوص (بحث الذاكرة المعنوي) ───
+export interface AiEmbedResult {
+  vectors: number[][]
+  model: string
+  dim: number
+  latencyMs: number
+}
+
+export async function aiEmbed(texts: string[], opts: { inputType?: "query" | "passage" } = {}): Promise<AiEmbedResult | null> {
+  if (!NIM_KEY || !texts.length) return null
+  const inputType = opts.inputType ?? "query"
+  for (const model of modelsLive(EMBED_CHAIN)) {
+    const started = Date.now()
+    try {
+      const res = await fetch(`${NIM_BASE}/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${NIM_KEY}` },
+        body: JSON.stringify({ model, input: texts, input_type: inputType, truncate: "END" }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (!res.ok) {
+        noteFailure(model, res.status)
+        continue
+      }
+      const data = (await res.json()) as { data?: Array<{ embedding: number[]; index: number }> }
+      const vecs = (data.data ?? []).sort((a, b) => a.index - b.index).map((d) => d.embedding)
+      if (!vecs.length || !vecs[0].length) {
+        noteFailure(model, 500)
+        continue
+      }
+      return { vectors: vecs, model, dim: vecs[0].length, latencyMs: Date.now() - started }
+    } catch {
+      noteFailure(model, 0)
+    }
+  }
+  return null
+}
+
+/** تشابه جيب التمام بين متجهين (للبحث الدلالي) */
+export function cosineSim(a: number[], b: number[]): number {
+  if (!a.length || a.length !== b.length) return 0
+  let dot = 0
+  let na = 0
+  let nb = 0
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]
+    na += a[i] * a[i]
+    nb += b[i] * b[i]
+  }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0
+}
+
+// ─── القدرات الخاصة: رؤية / ترجمة / سلامة / تحليل مستندات ───
+
+/** تحويل أي مصدر صورة (رابط http أو data URL) إلى data URL — موديلات NVIDIA الرؤية بتقبل base64 فقط */
+async function toDataUrl(imageUrl: string): Promise<string | null> {
+  if (imageUrl.startsWith("data:")) return imageUrl
+  if (!/^https?:\/\//.test(imageUrl)) return null
+  try {
+    const res = await fetch(imageUrl, {
+      signal: AbortSignal.timeout(20_000),
+      headers: { "User-Agent": "Mozilla/5.0 (LeadOS-Agent; compatible)" },
+    })
+    if (!res.ok) return null
+    const type = res.headers.get("content-type") ?? "image/png"
+    if (!type.startsWith("image/")) return null
+    const buf = Buffer.from(await res.arrayBuffer())
+    return `data:${type};base64,${buf.toString("base64")}`
+  } catch {
+    return null
+  }
+}
+
+/** تحليل صورة (data URL أو رابط http) بموديل الرؤية */
+export async function aiVision(prompt: string, imageUrl: string, opts: AiCallOptions = {}): Promise<AiResult | null> {
+  const dataUrl = await toDataUrl(imageUrl)
+  if (!dataUrl) return null
+  return aiChat(
+    [{ role: "user", content: [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: dataUrl } },
+    ] }],
+    { ...opts, task: "vision" },
+  )
+}
+
+/** ترجمة نص بموديلات Riva المخصصة */
+export async function aiTranslate(text: string, targetLang: string, opts: AiCallOptions = {}): Promise<AiResult | null> {
+  return aiChat(
+    [{ role: "user", content: `Translate to ${targetLang}: ${text}` }],
+    { ...opts, task: "translate", temperature: 0.1 },
+  )
+}
+
+export interface ModerationResult {
+  safe: boolean
+  verdict: string
+  model: string
+  latencyMs: number
+}
+
+/** فحص سلامة المحتوى قبل الإرسال (يمنع رسائل مسيئة/مخالفة) */
+export async function aiModerate(text: string, opts: AiCallOptions = {}): Promise<ModerationResult | null> {
+  const result = await aiChat([{ role: "user", content: text }], { ...opts, task: "moderate", temperature: 0.1 })
+  if (!result) return null
+  const lower = result.text.toLowerCase()
+  const safe = !/unsafe|violat|flagged/.test(lower)
+  return { safe, verdict: result.text.slice(0, 200), model: result.model, latencyMs: result.latencyMs }
 }
 
 export function extractJson<T>(text: string): T | null {
@@ -192,23 +390,31 @@ export function extractJson<T>(text: string): T | null {
 
 export function aiProviderStatus() {
   const hasKey = Boolean(NIM_KEY)
+  const tasks = Object.fromEntries(
+    (Object.keys(DEFAULT_TASK_CHAINS) as AiTask[]).map((t) => [t, { model: chainFor(t)[0], chain: chainFor(t) }]),
+  )
   return {
-    nvidia: hasKey && modelsLive("main").length > 0,
+    nvidia: hasKey && modelsLive(chainFor("chat")).length > 0,
     hasKey,
     base: NIM_BASE,
+    // توافق خلفي مع الواجهات القديمة
     models: {
-      fast: chainFor("fast")[0],
-      main: chainFor("main")[0],
+      fast: chainFor("classify")[0],
+      main: chainFor("chat")[0],
       reason: chainFor("reason")[0],
     },
     chains: {
-      fast: chainFor("fast"),
-      main: chainFor("main"),
+      fast: chainFor("classify"),
+      main: chainFor("chat"),
       reason: chainFor("reason"),
     },
+    // الجدول الكامل
+    tasks,
+    catalog: NVIDIA_CATALOG,
+    taskLabels: AI_TASK_LABELS,
     cooling: [...cooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
     note: hasKey
-      ? "NVIDIA NIM (مودلات مجانية) — راوتر مهام تلقائي"
+      ? "NVIDIA NIM (مودلات مجانية) — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي"
       : "أضف NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
   }
 }

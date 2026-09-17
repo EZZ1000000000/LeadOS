@@ -11,7 +11,14 @@ import { Bot, KeyRound, Globe, Cloud, ServerCog, Users2, Copy, Building2 } from 
 import { USER_ROLE_LABELS } from "@/lib/constants"
 
 interface SettingsData {
-  status: { nvidia: boolean; hasKey: boolean; models: { fast: string; main: string; reason: string }; note: string }
+  status: {
+    nvidia: boolean; hasKey: boolean
+    models: { fast: string; main: string; reason: string }
+    tasks?: Record<string, { model: string; chain: string[] }>
+    taskLabels?: Record<string, string>
+    catalog?: Array<{ id: string; role: string; kind: string; latency: string; tasks: string[] }>
+    note: string
+  }
   googleMapsKey: boolean
   stats: {
     totalRuns: number
@@ -62,7 +69,7 @@ export function SettingsView({ me }: { me: Me }) {
               <KeyRound className="me-1 h-3 w-3" /> NVIDIA NIM: {data.status.nvidia ? "مفعّل" : "غير مضبوط"}
             </Badge>
             <Badge variant="outline" className="border-violet-500/40 text-violet-300">
-              تصنيف: {data.status.models?.fast?.split("/").pop()} · محادثة: {data.status.models?.main?.split("/").pop()} · تحليل: {data.status.models?.reason?.split("/").pop()}
+              راوتر مهام: {data.status.tasks ? Object.keys(data.status.tasks).length : 3} مهمة · كتالوج: {data.status.catalog?.length ?? 0} موديل حي
             </Badge>
             <Badge variant="outline" className={data.googleMapsKey ? "border-emerald-500/40 text-emerald-300" : "border-border text-muted-foreground"}>
               <Globe className="me-1 h-3 w-3" /> Google Places: {data.googleMapsKey ? "مفعّل" : "غير مضبوط (اختياري)"}
@@ -71,9 +78,24 @@ export function SettingsView({ me }: { me: Me }) {
           <p className="text-xs leading-6 text-muted-foreground">
             محرك الذكاء الاصطناعي الوحيد: <code dir="ltr" className="rounded bg-secondary px-1 font-mono text-[10px]">NVIDIA NIM</code> (مودلات مجانية)
             بمفتاح <code dir="ltr" className="rounded bg-secondary px-1 font-mono text-[10px]">NVIDIA_API_KEY</code> في متغيرات البيئة
-            (Vercel → Settings → Environment Variables). كل مهمة بتروح لمودلها المناسب تلقائيًا (تصنيف سريع / محادثة / تحليل عميق)، ولو مودل وقع بيتحول للبديل تلقائيًا.
+            (Vercel → Settings → Environment Variables). كل مهمة بتروح لموديلها المناسب تلقائيًا من الكتالوج الحي الممسوح من الـAPI، ولو مودل وقع بيتحول للبديل تلقائيًا.
             بدون مفتاح، النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية.
           </p>
+          {data.status.tasks && data.status.taskLabels && (
+            <div className="rounded-lg border border-border/60 bg-secondary/20 p-2.5">
+              <p className="mb-1.5 text-[11px] font-bold text-violet-300">جدول التوجيه: مهمة ← موديل (مع بدائل تلقائية)</p>
+              <div className="grid gap-1 sm:grid-cols-2">
+                {Object.entries(data.status.tasks).map(([task, info]) => (
+                  <div key={task} className="flex items-center gap-1.5 rounded bg-secondary/40 px-2 py-1 text-[10px]">
+                    <span className="shrink-0 font-bold">{data.status.taskLabels?.[task] ?? task}</span>
+                    <span dir="ltr" className="truncate font-mono text-muted-foreground" title={info.chain.join(", ")}>
+                      {info.model.split("/").pop()}{info.chain.length > 1 ? ` +${info.chain.length - 1}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             <Input value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} placeholder="اكتب نص اختبار..." />
             <Button onClick={runTest} disabled={testing}>{testing ? "جارٍ..." : "اختبار"}</Button>
