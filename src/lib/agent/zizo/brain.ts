@@ -5,6 +5,7 @@
 import { db } from "@/lib/db"
 import { aiChat, extractJson } from "@/lib/ai"
 import { recordInsight, topInsights } from "@/lib/agent/memory"
+import { marketBrief, ensureKnowledgeSeeded } from "./knowledge"
 import { zizoPersona, HUMAN_RULES } from "./persona"
 import { SERVICES_DIGEST, servicesHint, zizoConfigOf } from "./services"
 import { humanize, type HumanOut } from "./humanize"
@@ -89,11 +90,14 @@ export async function zizoReply(wsId: string, conversationId: string): Promise<{
   const lastClient = clientMsgs[clientMsgs.length - 1]?.body ?? ""
   const prevStage = conv.stage
 
-  // ذاكرة زيزو: دروس البيع المتراكمة + ملاحظته عن العميل ده
+  // ذاكرة زيزو: دروس البيع المتراكمة + ملاحظته عن العميل ده + معرفته بالسوق
   const insights = await topInsights(wsId, 6)
   const salesIns = insights.filter((i) => ["sales", "positive", "negative"].includes(i.kind))
+  const market = marketBrief(`${lastClient} ${conv.memo ?? ""} ${conv.lead?.business?.category ?? ""}`)
   const memoryCtx = [
     conv.memo ? `ملاحظاتك عن العميل ده: ${conv.memo}` : "",
+    market ? `معرفتك بصناعته (من خبرتك في السوق):
+${market}` : "",
     salesIns.length
       ? `دروس بيع من تجاربك السابقة:\n${salesIns.map((i) => `• ${i.pattern} — ${i.note}`).join("\n")}`
       : "",
@@ -320,6 +324,7 @@ export async function addClientMessage(wsId: string, conversationId: string, bod
 
 // ─── النبضة الدائمة: يرد + يتابع + يبادر ───
 export async function zizoTick(wsId: string): Promise<{ replies: number; followups: number; outreaches: number; note: string }> {
+  await ensureKnowledgeSeeded(wsId) // لو ورشة جديدة — زيزو بيتعلم معرفة السوق قبل أول نبضة
   const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: wsId } }))?.settings)
   let replies = 0
   let followups = 0

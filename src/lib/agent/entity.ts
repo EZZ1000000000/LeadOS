@@ -14,6 +14,7 @@ import {
   topInsights,
   topMemoryQueries,
 } from "@/lib/agent/memory"
+import { ensureKnowledgeSeeded, sourceBrief, huntSeeds } from "@/lib/agent/zizo/knowledge"
 
 // ─── الحالة الجارية (خلال عملية السيرفر — كيان واحد لكل مساحة عمل) ───
 interface ActiveEntity { runId: string; stop: boolean; startedAt: number }
@@ -214,7 +215,8 @@ async function runEntityLoop(wsId: string, runId: string, opts: EntityOptions): 
   const recent: Array<{ tool: string; thought: string; note: string; ok: boolean }> = []
 
   try {
-    // ── الإقلاع: الذاكرة المتراكمة + تشغيلك السابق على نفس الهدف ──
+    // ── الإقلاع: معرفة السوق المسمّاة + الذاكرة المتراكمة + تشغيلك السابق على نفس الهدف ──
+    await ensureKnowledgeSeeded(wsId)
     const [insights, memQ, prevRun] = await Promise.all([
       topInsights(wsId, 8),
       topMemoryQueries(wsId, 8),
@@ -223,8 +225,14 @@ async function runEntityLoop(wsId: string, runId: string, opts: EntityOptions): 
         orderBy: { createdAt: "desc" },
       }),
     ])
+    const brief = sourceBrief(opts.goal)
+    const seeds = huntSeeds(opts.goal)
     const memoryCtx = [
       insights.length ? `دروس (بأوزان):\n${insights.map((i) => `• [${i.kind}] ${i.pattern} — ${i.note} (×${i.weight})`).join("\n")}` : "• لا دروس بعد — أنت في بداية تعلمك",
+      brief ? `معرفة سوق جاهزة عن هدفك (مصادر مجرّبة وطرق الصيد فيها):\n${brief}` : "",
+      seeds.queries.length
+        ? `بذور صيد مجرّبة — منصات مقترحة: ${seeds.platforms.join(",") || "GOOGLE_SEARCH"} • استعلامات افتتاحية: ${seeds.queries.slice(0, 8).map((q) => `«${q}»`).join(" ، ")}`
+        : "",
       memQ.length ? `أفضل استعلامات في ذاكرتك:\n${memQ.map((m) => `• «${trunc(m.query, 60)}» (${m.platform} — جودة ${m.qualityScore} — ${m.leadCount} ليد)`).join("\n")}` : "",
       prevRun ? `تشغيلك السابق على نفس الهدف: ${prevRun.leadsCreated} ليد عبر خطواته — خلاصته: ${trunc(prevRun.summary, 350) || "(بدون خلاصة)"} → لا تكرر ما فعلته، وسّع تغطيتك.` : "",
     ].filter(Boolean).join("\n\n")
