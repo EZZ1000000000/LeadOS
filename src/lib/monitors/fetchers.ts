@@ -165,7 +165,7 @@ async function fetchFacebookApify(groupUrl: string): Promise<FetchResult> {
  * وبيستخرج المنشورات من الـDOM، وبيحقن كوكيز الجلسة لو لقا جدار دخول.
  */
 async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
-  const nav = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 2 })
+  const nav = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4 })
   if (!nav.ok) {
     return { posts: [], status: "ERROR", note: `الستيلث: ${nav.error?.slice(0, 120) ?? "فشل"}` }
   }
@@ -175,7 +175,7 @@ async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
   if (loginWall && process.env.FACEBOOK_SESSION_COOKIE) {
     const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
     if (injected) {
-      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 2 })
+      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4 })
       if (retry.ok) {
         nav.url = retry.url
         nav.text = retry.text
@@ -222,8 +222,9 @@ export async function fetchFacebookGroup(externalId: string, groupUrl: string): 
     status: "ERROR" as FetchStatus,
     note: `فشل الاتصال: ${err instanceof Error ? err.message.slice(0, 80) : "خطأ"}`,
   }))
-  // لو الجلب المباشر نجح أو المشكلة مش هتتحل بأداة تانية — رجّعه
-  if (direct.status === "OK" || direct.status === "EMPTY" || direct.status === "BLOCKED") return direct
+  // OK → خلص | BLOCKED → الجروب خاص (مش هيتحل بأداة تانية)
+  // EMPTY/NEEDS_SESSION/ERROR → الستيلث الأول (مجاني ومحلي والجلسة حية فيه) وبعدين Apify
+  if (direct.status === "OK" || direct.status === "BLOCKED") return direct
   // NEEDS_SESSION/ERROR → الستيلث الأول (مجاني ومحلي) وبعدين Apify
   const stealth = await fetchFacebookStealth(groupUrl)
   if (stealth.status === "OK") return stealth
