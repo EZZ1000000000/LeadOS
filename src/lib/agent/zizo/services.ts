@@ -164,16 +164,24 @@ export function agencyNameOf(wsSettings: unknown): string {
 export interface ZizoConfig {
   agencyName: string
   liveCallHours: string // ساعات الشغل المتاحة للمكالمات
-  autoOutreach: boolean // مبادرة تواصل مع الليدز تلقائيًا؟
+  requireApproval: boolean // ممنوع أي رسالة تتبعت من غير موافقة صاحب الوكالة (ضد الإزعاج والحظر)
+  autoFollowup: boolean // متابعة الساكتين تلقائيًا؟ (مقفولة افتراضيًا — ضد الإزعاج)
+  autoOutreach: boolean // مبادرة تواصل مع الليدز تلقائيًا؟ (مقفولة افتراضيًا — الافتراضي: بس اللي طالب صراحة)
   minOutreachScore: number // أقل سكور ليد يستاهل مبادرة
-  maxDailyOutreach: number // سقف مبادرات يومي (بشري)
+  maxDailyOutreach: number // سقف مبادرات/درافتات يومي (بشري)
+  maxDailyMessages: number // سقف رسايل خروجة يوميًا لكل قناة (حماية الحظر)
+  minGapMinutes: number // أقل فجوة بين رسالتين على نفس القناة (طابع بشري)
 }
 
 export const ZIZO_DEFAULTS: Omit<ZizoConfig, "agencyName"> = {
   liveCallHours: "من 11 الصبح لـ 8 بالليل",
-  autoOutreach: true,
-  minOutreachScore: 60,
-  maxDailyOutreach: 12,
+  requireApproval: true,
+  autoFollowup: false,
+  autoOutreach: false,
+  minOutreachScore: 75,
+  maxDailyOutreach: 6,
+  maxDailyMessages: 30,
+  minGapMinutes: 6,
 }
 
 export function zizoConfigOf(wsSettings: unknown): ZizoConfig {

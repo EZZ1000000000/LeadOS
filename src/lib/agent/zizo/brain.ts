@@ -10,6 +10,7 @@ import { zizoPersona, HUMAN_RULES } from "./persona"
 import { SERVICES_DIGEST, servicesHint, zizoConfigOf } from "./services"
 import { humanize, type HumanOut } from "./humanize"
 import { stageLine, pickOpener, detectBooked, inferStage, STAGES, type SaleStage } from "./playbook"
+import { gateCheck } from "./gate"
 
 const trunc = (s: unknown, n: number) => String(s ?? "").slice(0, n)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -163,13 +164,27 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
   const nextStage = order[Math.max(dIdx, iIdx)] ?? prevStage
   const booked = detectBooked([...out.msgs, lastClient])
 
-  // إرسال القناة الحقيقية + حفظ الرسايل بتأخيراتها
+  // الإرسال عبر بوابة الإرسال البشري:
+  // requireApproval=true → أي رسالة تطلع درافت مستني موافقة صاحب الوكالة (مفيش إرسال عشوائي)
+  // الرد على عميل كلمنا (inbound) بيمر على البوابة: ساعات إنسان + سقف يومي + فجوة — واللي ترفضه يبقى درافت
   const phone = conv.channel === "WHATSAPP" ? conv.contactHandle ?? "" : ""
   const sentAt = new Date()
   let sentOk = 0
+  let drafted = 0
   for (let i = 0; i < out.msgs.length; i++) {
-    const ok = phone && evolutionReady() ? await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i]) : false
+    let ok = false
+    let draft = false
+    let account = "default"
+    if (cfg.requireApproval) {
+      draft = true
+    } else {
+      const gate = await gateCheck(wsId, conv.channel, cfg)
+      account = gate.account
+      if (gate.allowed && phone && evolutionReady()) ok = await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i])
+      else draft = true
+    }
     if (ok) sentOk++
+    else drafted++
     await db.message.create({
       data: {
         conversationId,
@@ -178,7 +193,13 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
         body: out.msgs[i],
         sentAt: new Date(sentAt.getTime() + i * 1000),
         deliverMs: out.delaysMs[i],
-        meta: ok ? { sent: true } : phone ? { sent: false } : { manual: true },
+        meta: ok
+          ? { sent: true, account }
+          : draft
+            ? { draft: true, pending: true }
+            : phone
+              ? { sent: false }
+              : { manual: true },
       },
     })
   }
@@ -187,7 +208,7 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
     where: { id: conversationId },
     data: {
       stage: nextStage,
-      status: "WAITING_CLIENT",
+      status: drafted > 0 ? "PENDING_APPROVAL" : "WAITING_CLIENT",
       memo: draft.memo ? trunc(`${conv.memo ? conv.memo + " • " : ""}${draft.memo}`, 400) : conv.memo,
       lastMsgAt: new Date(),
       lastReplyBy: "ZIZO",
@@ -223,7 +244,7 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
 
   return {
     ok: true,
-    note: `${out.msgs.length} رسالة بشري${sentOk ? ` • ${sentOk} اتبعتت واتساب` : ""} • ${prevStage}→${nextStage}`,
+    note: `${out.msgs.length} رسالة بشري${sentOk ? ` • ${sentOk} اتبعتت` : ""}${drafted ? ` • ${drafted} مستنية موافقتك` : ""} • ${prevStage}→${nextStage}`,
     msgs: out.msgs,
     delaysMs: out.delaysMs,
     stage: nextStage,
@@ -271,6 +292,10 @@ export async function zizoOutreach(wsId: string, leadId: string): Promise<{ ok: 
   })
   const out = humanize([opener])
 
+  // المبادرة الباردة = أخطر رسالة على الحساب — افتراضيًا درافت مستني موافقة صاحب الوكالة
+  const gate = await gateCheck(wsId, channel, cfg)
+  const canSend = !cfg.requireApproval && channel === "WHATSAPP" && evolutionReady() && gate.allowed
+
   const conv = await db.conversation.create({
     data: {
       workspaceId: wsId,
@@ -279,15 +304,15 @@ export async function zizoOutreach(wsId: string, leadId: string): Promise<{ ok: 
       contactName: bizName,
       contactHandle: phone || null,
       stage: "NEW",
-      status: "WAITING_CLIENT",
+      status: canSend ? "WAITING_CLIENT" : "PENDING_APPROVAL",
       memo: `مبادرة من زيزو — ليد سكور ${lead.score}`,
-      lastReplyBy: "ZIZO",
+      lastReplyBy: canSend ? "ZIZO" : null,
       msgCount: out.msgs.length,
     },
   })
   let sentOk = 0
   for (let i = 0; i < out.msgs.length; i++) {
-    const ok = channel === "WHATSAPP" ? await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i]) : false
+    const ok = canSend ? await sendWhatsapp(phone, out.msgs[i], out.delaysMs[i]) : false
     if (ok) sentOk++
     await db.message.create({
       data: {
@@ -296,16 +321,22 @@ export async function zizoOutreach(wsId: string, leadId: string): Promise<{ ok: 
         author: "ZIZO",
         body: out.msgs[i],
         deliverMs: out.delaysMs[i],
-        meta: ok ? { sent: true } : { manual: true },
+        meta: ok ? { sent: true, account: gate.account } : { draft: true, pending: true },
       },
     })
   }
-  await db.lead.update({
-    where: { id: leadId },
-    data: { lastContactedAt: new Date(), nextFollowUpAt: new Date(Date.now() + 22 * 3600_000) },
-  }).catch(() => undefined)
-  await recordInsight(wsId, "sales", "outreach", `افتتاحية لـ${bizName} (${channel}${sentOk ? " • اتبعتت" : " • انتظار إرسال"})`, { leadId })
-  return { ok: true, note: `مبادرة على ${bizName} — ${channel === "WHATSAPP" ? "واتساب" : "إنبوكس يدوي"}`, conversationId: conv.id }
+  if (sentOk) {
+    await db.lead.update({
+      where: { id: leadId },
+      data: { lastContactedAt: new Date(), nextFollowUpAt: new Date(Date.now() + 22 * 3600_000) },
+    }).catch(() => undefined)
+  }
+  await recordInsight(wsId, "sales", "outreach", `افتتاحية لـ${bizName} (${channel}${sentOk ? " • اتبعتت" : " • مستنية موافقة"})`, { leadId })
+  return {
+    ok: true,
+    note: sentOk ? `مبادرة على ${bizName} — اتبعتت واتساب` : `درافت مبادرة لـ${bizName} — مستنية موافقتك قبل الإرسال`,
+    conversationId: conv.id,
+  }
 }
 
 // ─── إضافة رسالة عميل على محادثة موجودة (إنبوكس يدوي/محاكاة) ───
@@ -343,25 +374,27 @@ export async function zizoTick(wsId: string): Promise<{ replies: number; followu
     await sleep(1500)
   }
 
-  // 2) متابعات: زيزو آخر من كلم ومر وقت المتابعة
-  const waiting = await db.conversation.findMany({
-    where: { workspaceId: wsId, status: "WAITING_CLIENT", lastReplyBy: "ZIZO", stage: { in: ["NEW", "ENGAGED", "INTERESTED", "OFFERED", "OBJECTION"] } },
-    orderBy: { lastMsgAt: "asc" },
-    take: 14,
-    select: { id: true, stage: true, lastMsgAt: true },
-  })
-  const now = Date.now()
-  for (const c of waiting) {
-    const due = followDueHours(c.stage)
-    if (now - c.lastMsgAt.getTime() > due * 3600_000) {
-      const r = await zizoReply(wsId, c.id)
-      if (r.ok) followups++
-      if (followups >= 4) break
-      await sleep(1500)
+  // 2) متابعات: مقفولة افتراضيًا (ضد الإزعاج) — بتشتغل فقط لو صاحب الوكالة فعل autoFollowup
+  if (cfg.autoFollowup) {
+    const waiting = await db.conversation.findMany({
+      where: { workspaceId: wsId, status: "WAITING_CLIENT", lastReplyBy: "ZIZO", stage: { in: ["NEW", "ENGAGED", "INTERESTED", "OFFERED", "OBJECTION"] } },
+      orderBy: { lastMsgAt: "asc" },
+      take: 14,
+      select: { id: true, stage: true, lastMsgAt: true },
+    })
+    const now = Date.now()
+    for (const c of waiting) {
+      const due = followDueHours(c.stage)
+      if (now - c.lastMsgAt.getTime() > due * 3600_000) {
+        const r = await zizoReply(wsId, c.id)
+        if (r.ok) followups++
+        if (followups >= 4) break
+        await sleep(1500)
+      }
     }
   }
 
-  // 3) مبادرات جديدة (بشرية: سقف يومي)
+  // 3) مبادرات: مقفولة افتراضيًا — ولما تتفتح بتعمل درافتات للليدز اللي عندها طلب صريح بس
   const startOfDay = new Date(new Date().setHours(0, 0, 0, 0))
   const sentToday = await db.conversation.count({ where: { workspaceId: wsId, createdAt: { gte: startOfDay }, stage: "NEW", lastReplyBy: "ZIZO" } })
   if (cfg.autoOutreach && sentToday < cfg.maxDailyOutreach) {
@@ -371,6 +404,13 @@ export async function zizoTick(wsId: string): Promise<{ replies: number; followu
         score: { gte: cfg.minOutreachScore },
         status: { in: ["NEW", "CONTACTED"] },
         conversations: { none: {} },
+        // شرط الطلب الصريح: بس ليد عنده إشارة طلب حقيقي — ممنوع البث العشوائي
+        OR: [
+          { intentScore: { gte: 65 } },
+          { intent: { contains: "طلب" } },
+          { intent: { contains: "محتاج" } },
+          { intent: { contains: "عايز" } },
+        ],
       },
       orderBy: { score: "desc" },
       take: Math.min(cfg.maxDailyOutreach - sentToday, 4),
@@ -387,14 +427,123 @@ export async function zizoTick(wsId: string): Promise<{ replies: number; followu
   return { replies, followups, outreaches, note: parts.length ? parts.join(" • ") : "مفيش شغل مطلوب دلوقتي" }
 }
 
+// ─── رسايل مستنية موافقة صاحب الوكالة (طبقة الموافقة) ───
+export interface PendingItem {
+  id: string
+  channel: string
+  contactName: string | null
+  stage: string
+  memo: string | null
+  business: string | null
+  score: number | null
+  drafts: string[]
+  lastMsgAt: Date
+}
+
+export async function pendingApprovals(wsId: string): Promise<PendingItem[]> {
+  const convs = await db.conversation.findMany({
+    where: { workspaceId: wsId, status: "PENDING_APPROVAL" },
+    orderBy: { lastMsgAt: "desc" },
+    take: 25,
+    include: {
+      lead: { select: { score: true, business: { select: { name: true, city: true } } } },
+      messages: { orderBy: { sentAt: "asc" }, take: 10 },
+    },
+  })
+  return convs
+    .map((c) => ({
+      id: c.id,
+      channel: c.channel,
+      contactName: c.contactName,
+      stage: c.stage,
+      memo: c.memo,
+      business: c.lead?.business?.name ?? c.contactName,
+      score: c.lead?.score ?? null,
+      drafts: c.messages
+        .filter((m) => m.direction === "OUT" && (m.meta as { draft?: boolean } | null)?.draft)
+        .map((m) => m.body),
+      lastMsgAt: c.lastMsgAt,
+    }))
+    .filter((c) => c.drafts.length > 0)
+}
+
+/** موافقة صاحب الوكالة → إرسال الدرافت عبر البوابة */
+export async function approveDraft(wsId: string, conversationId: string): Promise<{ ok: boolean; note: string }> {
+  const conv = await db.conversation.findFirst({
+    where: { id: conversationId, workspaceId: wsId },
+    include: { messages: { orderBy: { sentAt: "asc" }, take: 50 } },
+  })
+  if (!conv) return { ok: false, note: "محادثة غير موجودة" }
+  if (conv.status !== "PENDING_APPROVAL") return { ok: false, note: "مفيش حاجة مستنية موافقة هنا" }
+  const drafts = conv.messages.filter((m) => m.direction === "OUT" && (m.meta as { draft?: boolean } | null)?.draft)
+  if (!drafts.length) return { ok: false, note: "مفيش رسايل درافت" }
+
+  const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } }))?.settings)
+  const phone = conv.channel === "WHATSAPP" ? conv.contactHandle ?? "" : ""
+  let sentOk = 0
+  let blocked = ""
+  for (let i = 0; i < drafts.length; i++) {
+    const m = drafts[i]
+    const gate = await gateCheck(wsId, conv.channel, cfg)
+    if (!gate.allowed) {
+      blocked = gate.reason
+      break // البوابة مقفولة — الباقي يفضل درافت
+    }
+    const ok = phone && evolutionReady() ? await sendWhatsapp(phone, m.body, Math.min(2500 + i * 4000, 8000)) : false
+    if (ok) sentOk++
+    await db.message.update({
+      where: { id: m.id },
+      data: { meta: ok ? { sent: true, account: gate.account, approved: true } : { draft: true, pending: true, blocked: gate.reason } },
+    })
+  }
+
+  const remaining = drafts.length - sentOk
+  await db.conversation.update({
+    where: { id: conv.id },
+    data: {
+      status: remaining > 0 ? "PENDING_APPROVAL" : "WAITING_CLIENT",
+      lastMsgAt: new Date(),
+      ...(remaining === 0 ? { lastReplyBy: "ZIZO" } : {}),
+    },
+  })
+  if (sentOk && conv.leadId) {
+    await db.lead
+      .update({ where: { id: conv.leadId }, data: { lastContactedAt: new Date(), nextFollowUpAt: new Date(Date.now() + 22 * 3600_000) } })
+      .catch(() => undefined)
+  }
+  const note = sentOk
+    ? `اتبعتت ${sentOk}/${drafts.length}${remaining ? ` — الباقي: ${blocked}` : " — تمام"}`
+    : `متبعتش: ${blocked || "القناة مش متصلة (محتاج Evolution API أو القناة يدوي)"}`
+  return { ok: sentOk > 0, note }
+}
+
+/** رفض صاحب الوكالة → الدرافت يتشال والمحادثة تتقفل */
+export async function rejectDraft(wsId: string, conversationId: string): Promise<{ ok: boolean; note: string }> {
+  const conv = await db.conversation.findFirst({
+    where: { id: conversationId, workspaceId: wsId },
+    include: { messages: { take: 50 } },
+  })
+  if (!conv) return { ok: false, note: "محادثة غير موجودة" }
+  const drafts = conv.messages.filter((m) => m.direction === "OUT" && (m.meta as { draft?: boolean } | null)?.draft)
+  for (const m of drafts) {
+    await db.message.update({ where: { id: m.id }, data: { meta: { draft: true, rejected: true } } })
+  }
+  await db.conversation.update({
+    where: { id: conv.id },
+    data: { status: "CLOSED", memo: trunc(`${conv.memo ? conv.memo + " • " : ""}مرفوضة يدويًا من صاحب الوكالة`, 400) },
+  })
+  return { ok: true, note: `اترفضت ${drafts.length} رسالة — المحادثة اتقفلت` }
+}
+
 // ─── حالة زيزو للواجهة ───
 export async function zizoStatus(wsId: string) {
-  const [open, needsReply, waiting, booked, lost, byStage, fuel, convs] = await Promise.all([
+  const [open, needsReply, waiting, booked, lost, pending, byStage, fuel, convs] = await Promise.all([
     db.conversation.count({ where: { workspaceId: wsId, status: { in: ["OPEN", "NEEDS_REPLY", "WAITING_CLIENT"] } } }),
     db.conversation.count({ where: { workspaceId: wsId, status: "NEEDS_REPLY" } }),
     db.conversation.count({ where: { workspaceId: wsId, status: "WAITING_CLIENT" } }),
     db.conversation.count({ where: { workspaceId: wsId, bookedAt: { not: null } } }),
     db.conversation.count({ where: { workspaceId: wsId, stage: "LOST" } }),
+    db.conversation.count({ where: { workspaceId: wsId, status: "PENDING_APPROVAL" } }),
     db.conversation.groupBy({ by: ["stage"], where: { workspaceId: wsId }, _count: true }),
     db.lead.count({ where: { workspaceId: wsId, score: { gte: 60 }, conversations: { none: {} }, status: { in: ["NEW", "CONTACTED"] } } }),
     db.conversation.findMany({
@@ -409,7 +558,7 @@ export async function zizoStatus(wsId: string) {
     }),
   ])
   return {
-    open, needsReply, waiting, booked, lost, fuel,
+    open, needsReply, waiting, booked, lost, pending, fuel,
     stages: byStage.map((s) => ({ stage: s.stage, count: s._count })),
     conversations: convs,
     whatsapp: evolutionReady(),

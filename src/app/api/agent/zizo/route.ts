@@ -3,7 +3,7 @@
 // POST  → أفعال: reply | tick | outreach | open | config | close
 import { db } from "@/lib/db"
 import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
-import { zizoReply, zizoTick, zizoOutreach, zizoStatus, openConversation, addClientMessage } from "@/lib/agent/zizo/brain"
+import { zizoReply, zizoTick, zizoOutreach, zizoStatus, openConversation, addClientMessage, pendingApprovals, approveDraft, rejectDraft } from "@/lib/agent/zizo/brain"
 import { zizoConfigOf, AGENCY_SERVICES } from "@/lib/agent/zizo/services"
 
 export const maxDuration = 60
@@ -22,8 +22,12 @@ interface ZizoBody {
   agencyName?: string
   liveCallHours?: string
   autoOutreach?: boolean
+  requireApproval?: boolean
+  autoFollowup?: boolean
   minOutreachScore?: number
   maxDailyOutreach?: number
+  maxDailyMessages?: number
+  minGapMinutes?: number
 }
 
 export async function GET(req: Request) {
@@ -43,8 +47,9 @@ export async function GET(req: Request) {
     return json({ conversation: conv })
   }
   const status = await zizoStatus(wsId)
+  const pending = await pendingApprovals(wsId)
   const ws = await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } })
-  return json({ ...status, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })) })
+  return json({ ...status, pending, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })) })
 }
 
 export async function POST(req: Request) {
@@ -83,6 +88,14 @@ export async function POST(req: Request) {
       const ok = await addClientMessage(wsId, String(body.conversationId ?? ""), String(body.body ?? ""))
       return ok ? json({ ok: true }) : jsonError("محادثة غير موجودة", 404)
     }
+    if (action === "approve") {
+      const r = await approveDraft(wsId, String(body.conversationId ?? ""))
+      return r.ok ? json(r) : jsonError(r.note, 400)
+    }
+    if (action === "reject") {
+      const r = await rejectDraft(wsId, String(body.conversationId ?? ""))
+      return r.ok ? json(r) : jsonError(r.note, 400)
+    }
     if (action === "close") {
       const won = Boolean(body.won)
       await db.conversation.update({
@@ -102,6 +115,10 @@ export async function POST(req: Request) {
           ...(body.agencyName !== undefined ? { agencyName: String(body.agencyName).slice(0, 80) } : {}),
           ...(body.liveCallHours !== undefined ? { liveCallHours: String(body.liveCallHours).slice(0, 80) } : {}),
           ...(body.autoOutreach !== undefined ? { autoOutreach: Boolean(body.autoOutreach) } : {}),
+          ...(body.requireApproval !== undefined ? { requireApproval: Boolean(body.requireApproval) } : {}),
+          ...(body.autoFollowup !== undefined ? { autoFollowup: Boolean(body.autoFollowup) } : {}),
+          ...(body.maxDailyMessages !== undefined ? { maxDailyMessages: Math.max(1, Math.min(200, Number(body.maxDailyMessages) || 30)) } : {}),
+          ...(body.minGapMinutes !== undefined ? { minGapMinutes: Math.max(1, Math.min(120, Number(body.minGapMinutes) || 6)) } : {}),
           ...(body.minOutreachScore !== undefined ? { minOutreachScore: Math.max(0, Math.min(100, Number(body.minOutreachScore) || 60)) } : {}),
           ...(body.maxDailyOutreach !== undefined ? { maxDailyOutreach: Math.max(0, Math.min(50, Number(body.maxDailyOutreach) || 12)) } : {}),
         },

@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   MessagesSquare, RefreshCw, Send, CalendarCheck, Flame, Inbox, Sparkles,
-  PhoneCall, X, CheckCheck, MessageSquarePlus,
+  PhoneCall, X, CheckCheck, MessageSquarePlus, ShieldCheck, Ban, PenLine,
 } from "lucide-react"
 
 const STAGE_LABELS: Record<string, string> = {
@@ -36,12 +36,28 @@ interface ConvRow {
   memo: string | null
   lead?: { score: number; business?: { name: string; city: string } | null }
 }
+interface PendingItem {
+  id: string
+  channel: string
+  contactName: string | null
+  stage: string
+  memo: string | null
+  business: string | null
+  score: number | null
+  drafts: string[]
+  lastMsgAt: string
+}
 interface StatusPayload {
   open: number; needsReply: number; waiting: number; booked: number; lost: number; fuel: number
   whatsapp: boolean
   stages: Array<{ stage: string; count: number }>
   conversations: ConvRow[]
-  config: { agencyName: string; autoOutreach: boolean; minOutreachScore: number; maxDailyOutreach: number; liveCallHours: string }
+  pending: PendingItem[]
+  config: {
+    agencyName: string; autoOutreach: boolean; minOutreachScore: number; maxDailyOutreach: number
+    liveCallHours: string; requireApproval: boolean; autoFollowup: boolean
+    maxDailyMessages: number; minGapMinutes: number
+  }
   services: Array<{ id: string; name: string; pitch: string }>
 }
 interface Msg {
@@ -112,6 +128,12 @@ export function ZizoView() {
     reload()
   }
 
+  const decideDraft = async (conversationId: string, action: "approve" | "reject") => {
+    await apiSend("/api/agent/zizo", "POST", { action, conversationId })
+    if (sel === conversationId) await openConv(sel)
+    reload()
+  }
+
   if (loading) return <LoadingBlock label="جارٍ إحضار محادثات زيزو..." />
   if (error) return <EmptyState title="تعذر تحميل حالة زيزو" hint={String(error)} />
   if (!data) return <EmptyState title="لا بيانات" />
@@ -128,6 +150,43 @@ export function ZizoView() {
         <StatCard icon={<Sparkles className="h-4 w-4" />} label="وقود مبادرات" value={s.fuel} hint={`سكور ≥ ${s.config.minOutreachScore}`} />
       </div>
 
+      {/* رسايل مستنية موافقتك — مفيش حاجة بتتبعت من غير إشارتك */}
+      {s.pending.length > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-400">
+            <ShieldCheck className="h-4 w-4" />
+            رسايل مستنية موافقتك ({s.pending.length}) — زيزو مش بيبعت من غير إشارتك
+          </div>
+          <div className="space-y-2">
+            {s.pending.slice(0, 6).map((p) => (
+              <div key={p.id} className="rounded-lg border border-border/60 bg-card/60 p-2.5">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-bold">{p.business || p.contactName || "عميل"}</span>
+                  {p.score != null && <Badge variant="outline" className="text-[10px]">سكور {p.score}</Badge>}
+                  <Badge className={`px-1.5 text-[10px] ${STAGE_COLORS[p.stage] ?? ""}`}>{STAGE_LABELS[p.stage] ?? p.stage}</Badge>
+                  <span className="text-muted-foreground">{p.channel === "WHATSAPP" ? "واتساب" : "إنبوكس"} • {timeAgo(p.lastMsgAt)}</span>
+                  <div className="flex-1" />
+                  <Button size="sm" className="h-7 text-xs" onClick={() => decideDraft(p.id, "approve")}>
+                    <CheckCheck className="ml-1 h-3 w-3" /> موافقة وابعت
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7 text-xs text-rose-400" onClick={() => decideDraft(p.id, "reject")}>
+                    <Ban className="ml-1 h-3 w-3" /> ارفض
+                  </Button>
+                </div>
+                <div className="mt-1.5 space-y-1">
+                  {p.drafts.map((d, i) => (
+                    <div key={i} className="rounded-md bg-accent/40 px-2.5 py-1.5 text-sm leading-relaxed">
+                      <PenLine className="ml-1 inline h-3 w-3 text-muted-foreground" />
+                      {d}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* إعدادات + أزرار */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/50 p-3 text-sm">
         <span className="text-muted-foreground">الوكالة:</span>
@@ -137,6 +196,17 @@ export function ZizoView() {
           onClick={() => saveConfig({ autoOutreach: !s.config.autoOutreach })}>
           مبادرة تلقائية: {s.config.autoOutreach ? "شغالة" : "واقفة"}
         </Button>
+        <Button size="sm" variant={s.config.requireApproval ? "default" : "outline"} className="h-8"
+          onClick={() => saveConfig({ requireApproval: !s.config.requireApproval })}>
+          موافقة قبل الإرسال: {s.config.requireApproval ? "مفعّلة" : "مقفولة"}
+        </Button>
+        <Button size="sm" variant={s.config.autoFollowup ? "default" : "outline"} className="h-8"
+          onClick={() => saveConfig({ autoFollowup: !s.config.autoFollowup })}>
+          متابعة الساكتين: {s.config.autoFollowup ? "شغالة" : "واقفة"}
+        </Button>
+        <Badge variant="outline" className="h-6">
+          الحماية: {s.config.maxDailyMessages} رسالة/يوم • فجوة {s.config.minGapMinutes} دقيقة
+        </Badge>
         <Badge variant="outline" className="h-6">
           {s.whatsapp ? "واتساب مربوط ✅" : "إنبوكس يدوي (واتساب غير مربوط)"}
         </Badge>
@@ -170,6 +240,7 @@ export function ZizoView() {
                       <span>{timeAgo(c.lastMsgAt)}</span>
                     </div>
                     {c.status === "NEEDS_REPLY" && <div className="mt-1 text-[10px] font-bold text-amber-400">⚡ مستني رد زيزو</div>}
+                    {c.status === "PENDING_APPROVAL" && <div className="mt-1 text-[10px] font-bold text-amber-400">🛡️ مستنية موافقتك</div>}
                     {c.bookedAt && <div className="mt-1 flex items-center gap-1 text-[10px] font-bold text-emerald-400"><CalendarCheck className="h-3 w-3" /> لايف كول محجوز</div>}
                   </button>
                 ))}
