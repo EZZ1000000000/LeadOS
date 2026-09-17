@@ -1,8 +1,9 @@
-// inject-fb-full.mjs — حقن كوكيز فيسبوك بكل خصائصها من الـJSON (أدق مسار ممكن)
-// يقرأ config/fb-session-cookies.json ويرسل الكوكيز كما هي للخدمة
+// inject-fb-full.mjs — حقن كوكيز بكل خصائصها من الـJSON (أدق مسار ممكن)
+// الاستخدام: node scripts/inject-fb-full.mjs [مسار-json]  — الافتراضي فيسبوك، ويدعم واتساب ويب (المجال بيتقرا من الـJSON)
 import { readFileSync } from "node:fs"
 
-const arr = JSON.parse(readFileSync("/home/z/my-project/config/fb-session-cookies.json", "utf8"))
+const jsonPath = process.argv[2] || "/home/z/my-project/config/fb-session-cookies.json"
+const arr = JSON.parse(readFileSync(jsonPath, "utf8"))
 const cookies = arr.map((c) => {
   const out = {
     name: c.name,
