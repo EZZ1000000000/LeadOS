@@ -414,7 +414,7 @@ function socialContentType(url: string): string {
 }
 
 // ---- Platform adapter: live search restricted to a platform's domains ----
-const PLATFORM_SITES: Record<string, string[]> = {
+export const PLATFORM_SITES: Record<string, string[]> = {
   FACEBOOK: ["facebook.com"],
   INSTAGRAM: ["instagram.com"],
   X: ["x.com", "twitter.com"],
@@ -422,26 +422,61 @@ const PLATFORM_SITES: Record<string, string[]> = {
   REDDIT: ["reddit.com"],
   TIKTOK: ["tiktok.com"],
   YOUTUBE: ["youtube.com"],
-  DIRECTORY: ["yellowpages.com.eg", "egypt-business.com", "egyptianfoods.com", "elwakf.com"],
+  DIRECTORY: ["yellowpages.com.eg", "egypt-business.com", "industrydir.com", "egyptianfoods.com", "elwakf.com"],
   JOBS: ["wuzzuf.net", "forasna.com", "linkedin.com/jobs"],
+  // منصات اضافية حقيقية (طلب: زيزو يوصل لأي مصدر): اوليكس/هاتلا + منصات العمل الحر العربية
+  MARKETPLACE: ["olx.com.eg", "dubizzle.com.eg", "hatla2ee.com"],
+  FREELANCE: ["mostaql.com", "khamsat.com", "bahr.sa"],
+}
+
+// تثبيت جغرافي ذكي: مصر افتراضيًا — إلا لو الاستعلام خليجي (الرياض/دبي...) ساعتها من غير تثبيت
+const GULF_RE = /الرياض|جدة|الدمام|السعودية|دبي|أبوظبي|ابوظبي|الشارقة|الشارقه|الإمارات|الامارات|قطر|الدوحة|الكويت|مسقط|المنامة|خليج|riyadh|dubai|jeddah|ksa|uae|qatar|kuwait|doha|bahrain|oman/i
+export function geoPin(query: string): string {
+  if (/Egypt|مصر/.test(query)) return query
+  if (/[\u0600-\u06FF]/.test(query)) return GULF_RE.test(query) ? query : `${query} مصر`
+  return `${query} Egypt`
 }
 
 async function platformAdapter(platform: string, query: string, limit: number, recencyDays: number): Promise<DiscoveredItem[]> {
   const sites = PLATFORM_SITES[platform]
   if (!sites) return []
   const siteQuery = sites.map((s) => `site:${s}`).join(" OR ")
-  const geo = /[\u0600-\u06FF]/.test(query) ? "مصر" : "Egypt"
-  const pinned = query.includes("Egypt") || query.includes("مصر") ? query : `${query} ${geo}`
-  const fullQuery = `(${siteQuery}) ${pinned}`
+  const fullQuery = `(${siteQuery}) ${geoPin(query)}`
   const { results, provider } = await rawWebSearch(fullQuery, limit, recencyDays)
   return results.map((r) => toItem(r, { contentType: socialContentType(r.url), platform, query, recencyDays, provider }))
 }
 
+// ---- Reddit JSON adapter (بدون مفاتيح: منشورات حقيقية بنصها الكامل — أقوى من site: search) ----
+async function redditJsonAdapter(query: string, limit: number): Promise<DiscoveredItem[]> {
+  const clean = query.replace(/^(ريديت|reddit)\s*/i, "").trim()
+  const subMatch = clean.match(/r\/([A-Za-z0-9_]+)/)
+  const path = subMatch
+    ? `https://www.reddit.com/r/${subMatch[1]}/new.json?limit=${Math.min(50, limit * 3)}`
+    : `https://www.reddit.com/search.json?q=${encodeURIComponent(clean)}&limit=${Math.min(50, limit * 3)}`
+  try {
+    const data = (await fetchJson(path, { headers: { "User-Agent": "LeadOS-Agent/1.0 (lead discovery)" } })) as {
+      data?: { children?: Array<{ data?: { id?: string; title?: string; selftext?: string; subreddit?: string; author?: string; created_utc?: number; permalink?: string; num_comments?: number } }> }
+    }
+    const posts = (data.data?.children ?? []).map((c) => c.data).filter((p): p is NonNullable<typeof p> => Boolean(p?.title))
+    return posts.slice(0, limit).map((p) => ({
+      externalId: `reddit:${p.id}`,
+      title: p.title ?? "",
+      body: (p.selftext ?? "").slice(0, 600) || "(منشور رابط/صورة)",
+      url: `https://www.reddit.com${p.permalink ?? ""}`,
+      authorName: p.author ?? undefined,
+      contentType: "POST",
+      language: /[\u0600-\u06FF]/.test(`${p.title} ${p.selftext ?? ""}`) ? "ar" : "en",
+      publishedAt: p.created_utc ? new Date(p.created_utc * 1000) : undefined,
+      rawData: { platform: "REDDIT", adapter: "reddit_json", subreddit: p.subreddit, comments: p.num_comments } as Prisma.InputJsonValue,
+    }))
+  } catch {
+    return []
+  }
+}
+
 // ---- Plain web adapter (GOOGLE_SEARCH / WEBSITE / NEWS / fallback) ----
 async function webAdapter(query: string, limit: number, recencyDays: number, news = false): Promise<DiscoveredItem[]> {
-  // Geo-focus: "Cairo" matches Egypt *and* Georgia (USA) — pin Egyptian intent explicitly
-  const geo = /[\u0600-\u06FF]/.test(query) ? "مصر" : "Egypt"
-  const pinned = query.includes("Egypt") || query.includes("مصر") ? query : `${query} ${geo}`
+  const pinned = geoPin(query)
   const q = news ? `أخبار ${pinned} افتتاح توسع استثمار` : pinned
   const { results, provider } = await rawWebSearch(q, limit, news ? Math.min(7, recencyDays) : recencyDays)
   return results.map((r) => {
@@ -544,6 +579,14 @@ export async function runDiscovery(
         batch = await placesToItems(q, limitPerQuery).catch(() => [])
         if (!batch.length) batch = await googlePlacesAdapter(q, limitPerQuery)
         if (batch.length) adaptersUsed.push("google_places")
+      } else if (st === "REDDIT") {
+        // الأقوى أولًا: JSON API (منشورات بنصها الكامل بدون مفاتيح) — fallback: site: search
+        batch = await redditJsonAdapter(q, limitPerQuery)
+        if (batch.length) adaptersUsed.push("reddit_json")
+        else {
+          batch = await platformAdapter(st, q, limitPerQuery, RECENT)
+          if (batch.length) adaptersUsed.push("site:reddit")
+        }
       } else if (PLATFORM_SITES[st]) {
         batch = await platformAdapter(st, q, limitPerQuery, RECENT)
         if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)

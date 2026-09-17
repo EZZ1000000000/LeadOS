@@ -317,6 +317,31 @@ export const MARKET_FACTS: string[] = [
   "زاوية بيع GEO المضمونة: اسأل في ChatGPT سؤال بحثي عن مجال العميل («أحسب ... في مدينة كذا») قدامه — لو اسمه مش ظاهر في الإجابة، الرُد بيبيع نفسه: منافسك بياخد الزباين دول"
 ]
 
+// ─── خريطة الوصول الفعلية: كل مصدر بيوصلله إزاي بأداة حقيقية من ترسانة زيزو ───
+export const SOURCE_REACH: Record<string, string> = {
+  "eg-fb-restaurants": "lead_hunt على FACEBOOK (بحث عام فوري) — العمق جوة الجروبات يحتاج كوكيز فيسبوك أو Worker",
+  "eg-fb-sme": "lead_hunt على FACEBOOK (بحث عام فوري) — العمق يحتاج كوكيز/Worker",
+  "eg-whatsapp-merchants": "الصيد تليفوناتهم من أوليكس/الأدلة → whatsapp_send عبر Evolution API (EVOLUTION_API_URL/KEY)",
+  "eg-yellowpages": "lead_hunt DIRECTORY + crawl_page لاستخراج التليفونات من صفحات الدليل",
+  "eg-company-directory": "lead_hunt DIRECTORY + deep_crawl (8 صفحات لكل شركة)",
+  "eg-industrial": "lead_hunt DIRECTORY (industrydir.com جوة الأدلة) + deep_crawl لصفحات المصانع",
+  "eg-maps": "maps_places فورًا (Serper Places) — تليفونات ومواقع وتقييمات مباشرة",
+  "eg-marketplaces": "lead_hunt MARKETPLACE (olx/dubizzle/hatla2ee) + crawl_page على صفحات الإعلانات",
+  "eg-instagram-tiktok": "lead_hunt INSTAGRAM/TIKTOK (بحث عام) — الرقم بيطلع من موقعهم/الخرايط وبعدها واتساب",
+  "eg-jobs": "lead_hunt JOBS (wuzzuf/forasna/linkedin jobs) — شركات بتوظف تسويق كل شهر",
+  "ar-freelance": "lead_hunt FREELANCE (mostaql/khamsat/bahr) + crawl_page على العميل اللي بينشر مشاريع متكررة",
+  "gulf-remote": "maps_places وlead_hunt باستعلامات بأسماء مدن خليجية — التثبيت الذكي بيفهم إنها مش مصر",
+  "global-linkedin": "lead_hunt LINKEDIN (بحث عام) — العمق linkedin_hunt عبر Worker (WORKER_URL)",
+  "global-reddit": "Reddit JSON API مباشرة عبر lead_hunt REDDIT — منشورات بنصها كامل بدون أي مفاتيح",
+  "global-fb-groups": "lead_hunt FACEBOOK + بيدج Hire me/Services تتصفح بكوكيز/Worker",
+  "global-directories": "web_search + crawl_page على Clutch/DesignRush/Upwork",
+}
+
+/** مصفوفة الوصول: كل مصدر وبيوصلله إزاي — للواجهة وللرد على المستخدم */
+export function reachMatrix(): Array<{ id: string; name: string; region: Region; fit: string; reach: string }> {
+  return LEAD_SOURCES.map((s) => ({ id: s.id, name: s.name, region: s.region, fit: s.fit, reach: SOURCE_REACH[s.id] ?? "web_search عام" }))
+}
+
 // ─── مطابقات ───
 export function matchIndustries(text: string): ClientPresence[] {
   if (!text) return []
@@ -358,7 +383,7 @@ export function sourceBrief(text: string, limit = 5): string {
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
   return scored
-    .map((x) => `مصدر: ${x.s.name} (${x.s.region}) — ${x.s.what} • الأسلوب: ${x.s.how} • استعلام جاهز: «${x.s.hunt[0]}»`)
+    .map((x) => `مصدر: ${x.s.name} (${x.s.region}) — ${x.s.what} • الأسلوب: ${x.s.how} • وصولك ليه: ${SOURCE_REACH[x.s.id] ?? "web_search"} • استعلام جاهز: «${x.s.hunt[0]}»`)
     .join("\n")
 }
 
@@ -376,11 +401,17 @@ export function huntSeeds(text: string): { platforms: string[]; queries: string[
     const rel =
       inds.some((i) => s.fit.includes(i.industry.split(" ")[0])) ||
       (s.region === "EG" && /مصر|مصري/.test(text)) ||
+      (s.region === "GULF" && /خليج|السعودية|الامارات|الإمارات|دبي|الرياض|جدة|قطر|الكويت|مستقل|خمسات|بحر/i.test(text)) ||
+      (s.region === "GLOBAL" && /عالمي|انجليزي|إنجليزي|ريديت|reddit|global|english|upwork|linkedin|clutch/i.test(text)) ||
       /كل|أي|any|all/.test(text)
     if (!rel) continue
     if (s.kind === "maps") platforms.add("GOOGLE_MAPS")
     else if (s.kind === "facebook_groups" || s.kind === "whatsapp") platforms.add("FACEBOOK")
-    else if (s.kind === "linkedin" || s.kind === "jobs") platforms.add("LINKEDIN")
+    else if (s.kind === "linkedin") platforms.add("LINKEDIN")
+    else if (s.kind === "jobs") platforms.add("JOBS")
+    else if (s.kind === "directory") platforms.add("DIRECTORY")
+    else if (s.kind === "marketplace") platforms.add("MARKETPLACE")
+    else if (s.kind === "freelance" && s.region === "GULF") platforms.add("FREELANCE")
     else if (s.kind === "community" && s.region === "GLOBAL") platforms.add("REDDIT")
     else platforms.add("GOOGLE_SEARCH")
     queries.push(...s.hunt.slice(0, 2))

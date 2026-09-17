@@ -211,15 +211,19 @@ export const AGENT_TOOLS: AgentTool[] = [
         "لينكدإن": "LINKEDIN", "لينكدن": "LINKEDIN", "LINKEDIN": "LINKEDIN", "تويتر": "X", "X": "X", "ريديت": "REDDIT", "REDDIT": "REDDIT",
         "تيك توك": "TIKTOK", "تيكتوك": "TIKTOK", "TIKTOK": "TIKTOK", "يوتيوب": "YOUTUBE", "YOUTUBE": "YOUTUBE",
         "أدلة": "DIRECTORY", "ادلة": "DIRECTORY", "DIRECTORY": "DIRECTORY", "وظايف": "JOBS", "JOBS": "JOBS", "أخبار": "NEWS", "اخبار": "NEWS", "NEWS": "NEWS",
+        "أوليكس": "MARKETPLACE", "اوليكس": "MARKETPLACE", "olx": "MARKETPLACE", "OLX": "MARKETPLACE", "هاتلا": "MARKETPLACE", "هاتلا2ee": "MARKETPLACE", "سوق": "MARKETPLACE", "MARKETPLACE": "MARKETPLACE",
+        "مستقل": "FREELANCE", "خمسات": "FREELANCE", "بحر": "FREELANCE", "فريلانس": "FREELANCE", "عمل حر": "FREELANCE", "FREELANCE": "FREELANCE",
       }
       const rawPlatforms = (Array.isArray(args.platforms) ? args.platforms : ["GOOGLE_SEARCH"]).map(String).filter(Boolean)
       const platforms = Array.from(new Set(rawPlatforms.map((p) => PLATFORM_ALIASES[p.trim()] ?? PLATFORM_ALIASES[p.trim().toUpperCase()] ?? p.toUpperCase()))).filter(Boolean)
       if (!wsId || !queries.length) return { ok: false, note: "workspace_id أو queries مفقود" }
       let created = 0, duplicates = 0, scanned = 0
       const perPlatform: Array<{ platform: string; items: number; created: number; topItems: Array<{ title: string; url: string }> }> = []
-      const sourceTypeOf: Record<string, string> = { JOBS: "WEBSITE", WEB: "GOOGLE_SEARCH", NEWS: "NEWS", GOOGLE_SEARCH: "GOOGLE_SEARCH", FACEBOOK: "FACEBOOK", INSTAGRAM: "INSTAGRAM", X: "X", LINKEDIN: "LINKEDIN", REDDIT: "REDDIT", TIKTOK: "TIKTOK", YOUTUBE: "YOUTUBE", DIRECTORY: "DIRECTORY", GOOGLE_MAPS: "GOOGLE_MAPS" }
+      const sourceTypeOf: Record<string, string> = { JOBS: "WEBSITE", WEB: "GOOGLE_SEARCH", NEWS: "NEWS", GOOGLE_SEARCH: "GOOGLE_SEARCH", FACEBOOK: "FACEBOOK", INSTAGRAM: "INSTAGRAM", X: "X", LINKEDIN: "LINKEDIN", REDDIT: "REDDIT", TIKTOK: "TIKTOK", YOUTUBE: "YOUTUBE", DIRECTORY: "DIRECTORY", GOOGLE_MAPS: "GOOGLE_MAPS", MARKETPLACE: "MARKETPLACE", FREELANCE: "FREELANCE" }
       for (const platform of platforms) {
-        const source = await db.source.findFirst({ where: { workspaceId: wsId, type: sourceTypeOf[platform] ?? platform } })
+        // المصدر النوعي الأول — ولو مش موجود في الورشة نرجع لمصدر البحث العام (المهم زيزو يجيب، مش يتعطل)
+        let source = await db.source.findFirst({ where: { workspaceId: wsId, type: sourceTypeOf[platform] ?? platform } })
+        if (!source && platform !== "GOOGLE_MAPS") source = await db.source.findFirst({ where: { workspaceId: wsId, type: "GOOGLE_SEARCH" } })
         if (!source) { perPlatform.push({ platform, items: 0, created: 0, topItems: [] }); continue }
         let items: DiscoveredItem[] = []
         try {
