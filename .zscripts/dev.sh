@@ -130,6 +130,16 @@ echo "[BUN] Setting up database..."
 bun run db:push
 log_step_end "bun run db:push"
 
+# ══ LeadOS self-healing: restore empty DB from backup + snapshot + periodic loop ══
+log_step_start "LeadOS backup/restore guard"
+if [ -f "$PROJECT_DIR/scripts/backup-db.ts" ]; then
+        bun run "$PROJECT_DIR/scripts/backup-db.ts" --startup || true
+        nohup bash "$PROJECT_DIR/scripts/backup-loop.sh" >"$PROJECT_DIR/db/backups/loop.log" 2>&1 &
+        disown 2>/dev/null || true
+        echo "[LEADOS] backup/restore guard + periodic loop started"
+fi
+log_step_end "LeadOS backup/restore guard"
+
 log_step_start "Starting Next.js dev server"
 echo "[BUN] Starting development server..."
 # سقف ذاكرة V8 — الجهاز 4GB والمتصفح الستيلث بياكل منه؛ بدون السقف OOM killer بيقتل السيرفر
