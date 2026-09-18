@@ -16,6 +16,12 @@ const NOISE_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: "search_artifact", re: /\.\.\.$/ },
   { label: "too_short", re: /^.{1,4}$/ },
   { label: "listicle", re: /^(أفضل|افضل)\s*\d+\s|^best\s+\d+\s/i },
+  // نويسة الجولة الجديدة (بحث ويب مصري): قوائم عربية بدون أرقام + صفحات حجز/مبوبة
+  { label: "listicle_ar", re: /^(أفضل|افضل|أحسن|احسن|أقوى|اقوى|أهم|اهم)[\s\-–—:]/u },
+  { label: "how_to_choose", re: /(كيف تختار|دليل اختيار|مقارنة أفضل)/ },
+  { label: "classifieds", re: /(إعلانات مبوبة|اعلانات مبوبة|إعلانات مجانية)/ },
+  { label: "booking_portal", re: /^(book (a table|now)|top \d+ (restaurants|cafes))/i },
+  { label: "directory_generic", re: /(directory|listing|b2b marketplace)/i },
 ]
 
 const URL_NOISE: Array<{ label: string; re: RegExp }> = [

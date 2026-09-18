@@ -53,6 +53,8 @@ export function buildSearchPlan(rule: {
   const industryList = industries.length ? industries : [""]
   const serviceList = services.length ? services : ["برمجة", "website", "تطبيق"]
   const queries: string[] = []
+  // الكلمات المفتاحية الصريحة أهم — بتتحط الأول قبل قوالب المدن/الصناعات
+  for (const k of keywords) queries.push(k)
   for (const c of cityList) {
     for (const i of industryList) {
       for (const s of serviceList) {
@@ -60,7 +62,6 @@ export function buildSearchPlan(rule: {
       }
     }
   }
-  for (const k of keywords) queries.push(k)
   if (!queries.length) queries.push(rule.name)
   return {
     goal: rule.name,
@@ -318,6 +319,9 @@ async function searchZai(query: string, limit: number, recencyDays: number): Pro
       return Array.isArray(results) ? results : []
     } catch (err) {
       lastErr = err
+      // استعلام من غير نتايج مش خطأ — رجّع فاضي عشان السلسلة تكمل
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("422") || msg.toLowerCase().includes("no search results")) return []
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error("zai failed")
@@ -574,29 +578,35 @@ export async function runDiscovery(
     for (const st of types) {
       if (searches >= maxSearches || items.length >= limitPerQuery * 4) break
       let batch: DiscoveredItem[] = []
-      if (st === "GOOGLE_MAPS") {
-        // المسار الأساسي: Serper Places (مفتاح واحد يخدم الاثنين) — fallback: Google Places API الرسمي
-        batch = await placesToItems(q, limitPerQuery).catch(() => [])
-        if (!batch.length) batch = await googlePlacesAdapter(q, limitPerQuery)
-        if (batch.length) adaptersUsed.push("google_places")
-      } else if (st === "REDDIT") {
-        // الأقوى أولًا: JSON API (منشورات بنصها الكامل بدون مفاتيح) — fallback: site: search
-        batch = await redditJsonAdapter(q, limitPerQuery)
-        if (batch.length) adaptersUsed.push("reddit_json")
-        else {
+      try {
+        if (st === "GOOGLE_MAPS") {
+          // المسار الأساسي: Serper Places (مفتاح واحد يخدم الاثنين) — fallback: Google Places API الرسمي
+          batch = await placesToItems(q, limitPerQuery).catch(() => [])
+          if (!batch.length) batch = await googlePlacesAdapter(q, limitPerQuery)
+          if (batch.length) adaptersUsed.push("google_places")
+        } else if (st === "REDDIT") {
+          // الأقوى أولًا: JSON API (منشورات بنصها الكامل بدون مفاتيح) — fallback: site: search
+          batch = await redditJsonAdapter(q, limitPerQuery)
+          if (batch.length) adaptersUsed.push("reddit_json")
+          else {
+            batch = await platformAdapter(st, q, limitPerQuery, RECENT)
+            if (batch.length) adaptersUsed.push("site:reddit")
+          }
+        } else if (PLATFORM_SITES[st]) {
           batch = await platformAdapter(st, q, limitPerQuery, RECENT)
-          if (batch.length) adaptersUsed.push("site:reddit")
+          if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
+        } else if (st === "NEWS") {
+          batch = await webAdapter(q, limitPerQuery, RECENT, true)
+          if (batch.length) adaptersUsed.push("web_news")
+        } else {
+          // GOOGLE_SEARCH / WEBSITE / RSS / OTHER → plain live web
+          batch = await webAdapter(q, limitPerQuery, RECENT)
+          if (batch.length) adaptersUsed.push("web_search")
         }
-      } else if (PLATFORM_SITES[st]) {
-        batch = await platformAdapter(st, q, limitPerQuery, RECENT)
-        if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
-      } else if (st === "NEWS") {
-        batch = await webAdapter(q, limitPerQuery, RECENT, true)
-        if (batch.length) adaptersUsed.push("web_news")
-      } else {
-        // GOOGLE_SEARCH / WEBSITE / RSS / OTHER → plain live web
-        batch = await webAdapter(q, limitPerQuery, RECENT)
-        if (batch.length) adaptersUsed.push("web_search")
+      } catch (err) {
+        // استعلام واحد فاشل ميقتلش الجب كله — كمل على الباقي
+        console.warn(`[discovery] adapter ${st} failed on "${q.slice(0, 60)}": ${err instanceof Error ? err.message.slice(0, 120) : err}`)
+        batch = []
       }
       searches++
       items.push(...batch)
