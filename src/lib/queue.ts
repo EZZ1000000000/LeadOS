@@ -120,6 +120,9 @@ const NOISE_PATTERNS: RegExp[] = [
   /(للإيجار|للايجار|إيجار يومي|ايجار يومي|شقه مفروشه|شقة مفروشه|غرفه مفروشه|غرفة مفروشه)/u,
   // لاحقات نتائج البحث لصفحات شخصية: "فلان - LinkedIn" إلخ
   /\s[-–—]\s*(Facebook|LinkedIn|Instagram|YouTube|Twitter|X)\s*$/iu,
+  // قواميس/ترجمة/ويكي وصفحات تعريفية — مش بيزنسات
+  /cambridge|dictionary|wikipedia|wiktionary|reverso|traduction|المعنى|معنى\s*كلمة|قاموس/i,
+  /^(what is|what's)\s+(this|the|a|an)\b/i, // أسئلة تعريفية عامة
 ]
 
 /** Clean a SERP title into a usable business name (strip truncation artifacts). */

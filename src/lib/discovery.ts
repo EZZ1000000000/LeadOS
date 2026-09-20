@@ -499,6 +499,7 @@ function toItem(
 function socialContentType(url: string): string {
   const u = url.toLowerCase()
   if (u.includes("facebook.com/groups") || u.includes("/posts/") || u.includes("/status/")) return "POST"
+  if (u.includes("t.me/") || u.includes("telegram.me/")) return "POST"
   if (u.includes("reddit.com/r/")) return "POST"
   if (u.includes("linkedin.com/posts") || u.includes("linkedin.com/pulse")) return "POST"
   if (u.includes("youtube.com/watch") || u.includes("youtu.be") || u.includes("tiktok.com")) return "VIDEO"
@@ -521,6 +522,7 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   JOBS: ["wuzzuf.net", "forasna.com", "linkedin.com/jobs"],
   // منصات اضافية حقيقية (طلب: زيزو يوصل لأي مصدر): اوليكس/هاتلا + منصات العمل الحر العربية
   MARKETPLACE: ["olx.com.eg", "dubizzle.com.eg", "hatla2ee.com"],
+  TELEGRAM: ["t.me", "telegram.me"],
   FREELANCE: ["mostaql.com", "khamsat.com", "bahr.sa"],
   // الموجة الجديدة: أعلى نية شراء بأقل خطر حظر (طلبات 24/25)
   ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads"],
@@ -573,6 +575,146 @@ async function redditJsonAdapter(query: string, limit: number): Promise<Discover
   } catch {
     return []
   }
+}
+
+// ---- Telegram public channels adapter (t.me/s/<channel> — بدون مفاتيح، بوستات حقيقية) ----
+// قنوات أعمال/اقتصاد مصرية حية (تم التحقق منها بالفحص الحي — كلها بترجع بوستات)
+const TELEGRAM_CHANNELS = [
+  "egyptbusiness", // أعمال ومشاريع مصرية
+  "AlBorsaNews", // جريدة البورصة
+  "AlmalNews", // المال نيوز
+  "AkhbarEconomy", // أخبار الاقتصاد
+  "BusinessEgypt", // بيزنس إيجيبت
+  "marketing_egypt", // تسويق مصر
+  "sadany", // ريادة أعمال
+  "telegram", // قناة رسمية (احتياط آمن دايمًا موجود)
+]
+
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<!\[CDATA\[|\]\]>/g, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+/** استخراج الكلمات الدالة من الاستعلام للفلترة داخل البوستات/الأخبار */
+function queryTokens(query: string): string[] {
+  return query
+    .toLowerCase()
+    .replace(/site:\S+|filetype:\S+|inurl:\S+/g, " ")
+    .split(/[\s,"'()«»]+/)
+    .filter((w) => w.length > 2 && !["وthe", "the", "for", "and", "في", "من", "على", "عن", "فين", "كام"].includes(w))
+    .slice(0, 8)
+}
+
+async function telegramAdapter(query: string, limit: number): Promise<DiscoveredItem[]> {
+  // لو الاستعلام بيحدد قناة بعينها (@channel أو t.me/channel) نبدأ بيها
+  const explicit = query.match(/(?:t\.me\/s?\/|@)([A-Za-z0-9_]{3,32})/)
+  const targets = explicit ? [explicit[1], ...TELEGRAM_CHANNELS.filter((c) => c !== explicit![1])] : TELEGRAM_CHANNELS
+  const all: DiscoveredItem[] = []
+  for (const ch of targets.slice(0, 6)) {
+    try {
+      const res = await fetch(`https://t.me/s/${ch}`, {
+        headers: { "User-Agent": BROWSER_UA, "Accept-Language": "ar,en;q=0.8" },
+        signal: AbortSignal.timeout(12000),
+      })
+      if (!res.ok) continue
+      const html = await res.text()
+      // كل رسالة كتلة تبدأ بـ data-post="<channel>/<id>" — نصها ووقتها جوا الكتلة
+      const chunks = html.split('data-post="').slice(1)
+      for (const chunk of chunks) {
+        const postId = chunk.slice(0, chunk.indexOf('"'))
+        if (!postId) continue
+        const textMatch = chunk.match(/tgme_widget_message_text[^>]*>([\s\S]{20,4000}?)<\/div>/)
+        const text = textMatch ? stripHtml(textMatch[1]) : ""
+        if (text.length < 25) continue // ستيكر/توجيه فاضي — مفيش نية
+        const timeMatch = chunk.match(/<time[^>]+datetime="([^"]+)"/)
+        const publishedAt = timeMatch && !Number.isNaN(new Date(timeMatch[1]).getTime()) ? new Date(timeMatch[1]) : undefined
+        const url = `https://t.me/${postId}`
+        all.push({
+          externalId: `telegram:${postId}`,
+          title: text.slice(0, 90),
+          body: text.slice(0, 900),
+          url,
+          contentType: "POST",
+          language: /[\u0600-\u06FF]/.test(text) ? "ar" : "en",
+          publishedAt,
+          rawData: {
+            platform: "TELEGRAM", adapter: "telegram_public", channel: postId.split("/")[0],
+            postId, telegramViews: chunk.match(/tgme_widget_message_views[^>]*>([^<]+)</)?.[1] ?? null,
+          } as Prisma.InputJsonValue,
+        })
+      }
+      if (all.length >= limit * 3) break
+    } catch {
+      /* قناة فاشلة مش بتوقف الباقي */
+    }
+  }
+  // فلترة بالكلمات الدالة — لو فيه توافق ناخد المناسب، وإلا نرجع كل حاجة (التصنيف هيصفّي)
+  const tokens = queryTokens(query)
+  const relevant = tokens.length ? all.filter((i) => tokens.some((t) => `${i.title} ${i.body}`.toLowerCase().includes(t))) : []
+  return (relevant.length >= 3 ? relevant : all).slice(0, limit)
+}
+
+// ---- RSS adapter (فيدات أخبار أعمال مصرية حقيقية — تم التحقق بالفحص الحي) ----
+const RSS_FEEDS: Array<{ name: string; url: string }> = [
+  { name: "جريدة البورصة", url: "https://alborsaanews.com/feed/" },
+  { name: "Wamda — شركات ناشئة", url: "https://www.wamda.com/feed" },
+  { name: "أموال الغد English", url: "https://en.amwalalghad.com/feed/" },
+  { name: "Egyptian Streets", url: "https://egyptianstreets.com/feed/" },
+]
+
+function parseFeedXml(xml: string, feedName: string): DiscoveredItem[] {
+  const blocks = [...xml.matchAll(/<(item|entry)[\s>][\s\S]*?<\/\1>/g)].map((m) => m[0])
+  return blocks.map((block) => {
+    const title = stripHtml(block.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1] ?? "")
+    const desc = stripHtml(block.match(/<(?:description|summary|content)[^>]*>([\s\S]*?)<\/(?:description|summary|content)>/)?.[1] ?? "")
+    const link =
+      block.match(/<link[^>]*href="([^"]+)"/)?.[1]?.trim() ??
+      block.match(/<link[^>]*>([\s\S]*?)<\/link>/)?.[1]?.trim() ??
+      block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/)?.[1]?.trim() ??
+      ""
+    const dateStr = block.match(/<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)</)?.[1]?.trim()
+    const publishedAt = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : undefined
+    return {
+      externalId: `rss:${hashId(link || title)}`,
+      title,
+      body: (desc || title).slice(0, 900),
+      url: link,
+      contentType: "ARTICLE",
+      language: /[\u0600-\u06FF]/.test(`${title} ${desc}`) ? "ar" : "en",
+      publishedAt,
+      rawData: { platform: "RSS", adapter: "rss_feed", feed: feedName } as Prisma.InputJsonValue,
+    }
+  }).filter((i) => i.title.length > 5 && i.url.startsWith("http"))
+}
+
+async function rssAdapter(query: string, limit: number): Promise<DiscoveredItem[]> {
+  const all: DiscoveredItem[] = []
+  await Promise.all(
+    RSS_FEEDS.map(async (f) => {
+      try {
+        const res = await fetch(f.url, {
+          headers: { "User-Agent": BROWSER_UA, Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*" },
+          signal: AbortSignal.timeout(12000),
+        })
+        if (!res.ok) return
+        all.push(...parseFeedXml(await res.text(), f.name))
+      } catch {
+        /* فيد فاشل مش بيوقف الباقي */
+      }
+    }),
+  )
+  const tokens = queryTokens(query)
+  const relevant = tokens.length ? all.filter((i) => tokens.some((t) => `${i.title} ${i.body}`.toLowerCase().includes(t))) : []
+  return (relevant.length >= 3 ? relevant : all).slice(0, limit)
 }
 
 // ---- Plain web adapter (GOOGLE_SEARCH / WEBSITE / NEWS / fallback) ----
@@ -688,6 +830,22 @@ export async function runDiscovery(
           else {
             batch = await platformAdapter(st, q, limitPerQuery, RECENT)
             if (batch.length) adaptersUsed.push("site:reddit")
+          }
+        } else if (st === "TELEGRAM") {
+          // الأقوى أولًا: قنوات عامة حية عبر t.me/s (بدون مفاتيح) — fallback: site: search
+          batch = await telegramAdapter(q, limitPerQuery)
+          if (batch.length) adaptersUsed.push("telegram_public")
+          else {
+            batch = await platformAdapter(st, q, limitPerQuery, RECENT)
+            if (batch.length) adaptersUsed.push("site:telegram")
+          }
+        } else if (st === "RSS") {
+          // الأقوى أولًا: فيدات أعمال مصرية حقيقية — fallback: بحث ويب
+          batch = await rssAdapter(q, limitPerQuery)
+          if (batch.length) adaptersUsed.push("rss_feeds")
+          else {
+            batch = await webAdapter(q, limitPerQuery, RECENT)
+            if (batch.length) adaptersUsed.push("web_rss_fallback")
           }
         } else if (PLATFORM_SITES[st]) {
           batch = await platformAdapter(st, q, limitPerQuery, RECENT)
