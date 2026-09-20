@@ -73,6 +73,9 @@ model Workspace {
   agentInsights   AgentInsight[]
   monitoredGroups MonitoredGroup[]
   conversations   Conversation[]
+  sequences       Sequence[]
+  experiments     AbExperiment[]
+  platformAccounts PlatformAccount[]
 }
 
 model WorkspaceMember {
@@ -464,6 +467,7 @@ model Lead {
   sourceLinks   LeadSource[]
   deals         Deal[]
   conversations Conversation[]
+  enrollments   SequenceEnrollment[]
 
   @@index([workspaceId, status, score])
   @@index([workspaceId, leadSourceType, createdAt])
@@ -1132,4 +1136,102 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, sentAt])
+}
+
+// ══════════ الموجة الجديدة: سلاسل المتابعة + تجارب الرسايل + حسابات المنصات ══════════
+
+/// سلسلة متابعة متعددة اللمسات (طلب: 80% من الصفقات بعد 3-5 لمسات)
+/// kind: NURTURE (ليدز جديدة) | REACTIVATION (ليدز باردة) | ONBOARD (عملاء جدد)
+/// الرسايل بتتولد كمهام جاهزة بإرسال بضغطة — سياسة الرد-فقط: مفيش إرسال آلي استباقي
+model Sequence {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  name           String
+  description    String?
+  kind           String   @default("NURTURE") // NURTURE | REACTIVATION | ONBOARD
+  enabled        Boolean  @default(true)
+  targetStatuses Json?    // string[] — حالات الليد المطلوب تجنيدها (فاضي = الكل)
+  steps          SequenceStep[]
+  enrollments    SequenceEnrollment[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, enabled, kind])
+}
+
+/// خطوة في السلسلة — نص جاهز مكتوب بالعامية + مهلة انتظار بعد الخطوة السابقة
+model SequenceStep {
+  id         String  @id @default(cuid())
+  sequenceId String
+  order      Int     @default(1)
+  channel    String  @default("TASK") // TASK | WHATSAPP | EMAIL | MANUAL
+  template   String
+  waitHours  Int     @default(72)
+  active     Boolean @default(true)
+
+  sequence Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@index([sequenceId, order])
+}
+
+/// تجنيد ليد في سلسلة — المحرك بيكمل الخطوات لحد ما تخلص أو الليد يرد
+model SequenceEnrollment {
+  id          String    @id @default(cuid())
+  workspaceId String
+  sequenceId  String
+  leadId      String
+  currentStep Int       @default(0)
+  status      String    @default("ACTIVE") // ACTIVE | COMPLETED | PAUSED | CANCELLED
+  nextStepAt  DateTime?
+  lastStepAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sequence Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead     Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([sequenceId, leadId])
+  @@index([workspaceId, status, nextStepAt])
+  @@index([leadId])
+}
+
+/// تجربة A/B على رسايل التواصل — نفس الليد نصفين برسالتين، والفائز يبقى القالب
+model AbExperiment {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  variants    Json     // [{ name, template, sent, replied, won }]
+  status      String   @default("RUNNING") // RUNNING | DONE
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+}
+
+/// حسابات المنصات المتعددة (طلب: تهيئة multi-account) — كل حساب = كوتية يومية إضافية
+/// التوزيع تلقائي بالحِمل عبر pickAccount — الحالة WARMING بتمنع الإرسال لحد ما الحساب يتعير
+model PlatformAccount {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  platform      String    // WHATSAPP | FACEBOOK | INSTAGRAM | TELEGRAM | LINKEDIN | X
+  handle        String
+  label         String?
+  status        String    @default("WARMING") // WARMING | ACTIVE | COOLDOWN | BLOCKED | DISABLED
+  dailyLimit    Int       @default(20)
+  sentToday     Int       @default(0)
+  lastSentAt    DateTime?
+  cooldownUntil DateTime?
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform, handle])
+  @@index([workspaceId, platform, status])
 }

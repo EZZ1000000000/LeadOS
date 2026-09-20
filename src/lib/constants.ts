@@ -32,13 +32,126 @@ export const INTENT_LABELS: Record<string, string> = {
 export const SOURCE_TYPES = [
   "FACEBOOK", "LINKEDIN", "X", "REDDIT", "INSTAGRAM", "TIKTOK", "YOUTUBE",
   "TELEGRAM", "GOOGLE_MAPS", "GOOGLE_SEARCH", "WEBSITE", "NEWS", "RSS",
-  "DIRECTORY", "OTHER",
+  "DIRECTORY", "JOBS", "MARKETPLACE", "FREELANCE", "ADS_LIBRARY", "REVIEWS",
+  "EVENTS", "QUORA", "DISCORD", "OTHER",
 ] as const
 export const SOURCE_TYPE_LABELS: Record<string, string> = {
   FACEBOOK: "فيسبوك", LINKEDIN: "لينكدإن", X: "X / تويتر", REDDIT: "ريديت",
   INSTAGRAM: "إنستجرام", TIKTOK: "تيك توك", YOUTUBE: "يوتيوب", TELEGRAM: "تليجرام",
   GOOGLE_MAPS: "خرائط جوجل", GOOGLE_SEARCH: "بحث جوجل", WEBSITE: "مواقع الويب",
   NEWS: "أخبار", RSS: "RSS", DIRECTORY: "أدلة الأعمال", OTHER: "أخرى",
+  JOBS: "مواقع التوظيف", MARKETPLACE: "مواقع البيع (OLX/دوبيزل)", FREELANCE: "العمل الحر (مستقل/خمسات)",
+  ADS_LIBRARY: "مكتبة إعلانات ميتا", REVIEWS: "تقييمات ومراجعات", EVENTS: "المناسبات والمعارض",
+  QUORA: "Quora", DISCORD: "ديسكورد",
+}
+
+// ---- حزم النيتش الجاهزة (طلب: مسح نيتش كامل بضغطة) ----
+export interface NichePack {
+  key: string
+  ar: string
+  icon: string
+  industries: string[]
+  services: string[]
+  keywords: string[]
+  sourceTypes: string[]
+}
+export const NICHE_PACKS: NichePack[] = [
+  {
+    key: "restaurants", ar: "مطاعم وكافيهات", icon: "🍽️",
+    industries: ["مطعم", "كافيه", "بيتزا", "فول وطعمية"],
+    services: ["نظام طلبات أونلاين", "نظام كاشير POS", "تطبيق موبايل"],
+    keywords: ["مطعم محتاج نظام طلبات", "كافيه عايز تطبيق دليفري", "مطعم مفيش موقع اونلاين"],
+    sourceTypes: ["GOOGLE_MAPS", "FACEBOOK", "INSTAGRAM", "MARKETPLACE"],
+  },
+  {
+    key: "pharmacies", ar: "صيدليات", icon: "💊",
+    industries: ["صيدلية", "شركة أدوية"],
+    services: ["نظام كاشير POS", "نظام ERP", "أتمتة وواتساب"],
+    keywords: ["صيدلية محتاجة برنامج كاشير", "صيدليات بياعة اونلاين"],
+    sourceTypes: ["GOOGLE_MAPS", "FACEBOOK", "DIRECTORY"],
+  },
+  {
+    key: "clinics", ar: "عيادات وأطباء", icon: "🩺",
+    industries: ["عيادة", "طبيب", "مركز أسنان", "معمل تحاليل"],
+    services: ["نظام حجوزات", "موقع إلكتروني", "تسويق رقمي"],
+    keywords: ["عيادة محتاجة نظام حجز مواعيد", "دكتور عايز موقع تعريفى"],
+    sourceTypes: ["GOOGLE_MAPS", "FACEBOOK", "REVIEWS"],
+  },
+  {
+    key: "gyms", ar: "جيمات وناديي", icon: "🏋️",
+    industries: ["جيم", "نادي", "كروس فيت", "يوغا"],
+    services: ["نظام اشتراكات", "تطبيق موبايل", "تسويق رقمي"],
+    keywords: ["جيم محتاج نظام اشتراكات", "نادي عايز تطبيق حجز"],
+    sourceTypes: ["GOOGLE_MAPS", "INSTAGRAM", "FACEBOOK"],
+  },
+  {
+    key: "factories", ar: "مصانع", icon: "🏭",
+    industries: ["مصنع", "شركة تصنيع", "مستلزمات صناعية"],
+    services: ["نظام ERP", "نظام CRM", "حلول سحابية"],
+    keywords: ["مصنع محتاج نظام ERP", "شركة تصنيع عايزة نظام مخازن"],
+    sourceTypes: ["GOOGLE_SEARCH", "DIRECTORY", "LINKEDIN", "JOBS"],
+  },
+  {
+    key: "ecommerce", ar: "براندات إلكترونية", icon: "🛒",
+    industries: ["متجر إلكتروني", "براند", "بيع اونلاين"],
+    services: ["متجر إلكتروني", "تسويق رقمي", "أتمتة وواتساب"],
+    keywords: ["براند عايز متجر الكتروني", "بياعة اونلاين محتاجة موقع", "صفحة بيع منتجات محتاجة شيبينج نظام"],
+    sourceTypes: ["INSTAGRAM", "FACEBOOK", "TIKTOK", "MARKETPLACE"],
+  },
+  {
+    key: "real_estate", ar: "عقارات", icon: "🏢",
+    industries: ["عقارات", "مكتب عقاري", "كمبوند"],
+    services: ["موقع إلكتروني", "نظام CRM", "تسويق رقمي"],
+    keywords: ["مكتب عقارات محتاج موقع", "سمسار عقارى عايز CRM"],
+    sourceTypes: ["GOOGLE_MAPS", "FACEBOOK", "MARKETPLACE"],
+  },
+  {
+    key: "education", ar: "تعليم ودروس", icon: "🎓",
+    industries: ["سنتر دروس", "مدرسة خاصة", "كورسات"],
+    services: ["نظام حجوزات", "موقع إلكتروني", "تطبيق موبايل"],
+    keywords: ["سنتر محتاج نظام حجز حصص", "معلم عايز منصة كورسات"],
+    sourceTypes: ["GOOGLE_MAPS", "FACEBOOK", "YOUTUBE"],
+  },
+  {
+    key: "salons", ar: "صالونات وسبا", icon: "💅",
+    industries: ["صالون تجميل", "سبا", "بربير شوب"],
+    services: ["نظام حجوزات", "موقع إلكتروني", "تسويق رقمي"],
+    keywords: ["صالون محتاج نظام حجز مواعيد", "سبا عايز تطبيق حجز"],
+    sourceTypes: ["GOOGLE_MAPS", "INSTAGRAM", "FACEBOOK"],
+  },
+  {
+    key: "startups", ar: "ستارت أب وشركات صغيرة", icon: "🚀",
+    industries: ["ستارت أب", "شركة ناشئة", "شركة برمجيات"],
+    services: ["نظام CRM", "أتمتة وواتساب", "تكاملات أنظمة"],
+    keywords: ["ستارت اب مصري بيدور على مطور", "شركة ناشئة محتاجة اتوميشن"],
+    sourceTypes: ["LINKEDIN", "JOBS", "FREELANCE", "QUORA"],
+  },
+]
+
+// ---- التوسيع الجغرافي: محافظات مصر (طلب: مسح محافظة بمحافظة) ----
+export const EGYPT_GOVERNORATES = [
+  "القاهرة", "الجيزة", "الإسكندرية", "القليوبية", "الدقهلية", "الشرقية",
+  "المنوفية", "الغربية", "بني سويف", "الفيوم", "المنيا", "أسيوط",
+  "سوهاج", "قنا", "الأقصر", "أسوان", "البحر الأحمر", "الوادي الجديد",
+  "مطروح", "شمال سيناء", "جنوب سيناء", "الإسماعيلية", "بورسعيد",
+  "السويس", "دمياط", "كفر الشيخ", "البحيرة",
+] as const
+
+// ---- التقويم الموسمي المصري (طلب: استغلال الموسمية قبل المنافسين) ----
+// seasonFor(month1based) → { key, ar, boost } — boost تتحط في استعلامات الاكتشاف
+export interface SeasonInfo { key: string; ar: string; boost: string[] }
+export function seasonFor(month1based: number): SeasonInfo {
+  if ([6, 7, 8].includes(month1based))
+    return { key: "summer", ar: "الصيف والعزل المدرسي", boost: ["صيفي", "رحلات ساحل", "عزومات", "مشاوير"] }
+  if (month1based === 3 || month1based === 4)
+    return { key: "ramadan_window", ar: "موسم رمضان والمطاعم", boost: ["رمضان", "إفطار", "سحور", "طلبات رمضان"] }
+  if ([9, 10].includes(month1based))
+    return { key: "back_to_school", ar: "العودة للمدارس", boost: ["مدارس", "مراكز دروس", "قرطاسية"] }
+  if (month1based === 11 || month1based === 12)
+    return { key: "white_friday", ar: "الجمعة البيضاء والعروض", boost: ["عروض", "خصومات", "بلاك فرايداي", "تخفيضات"] }
+  if ([1, 2].includes(month1based))
+    return { key: "new_year", ar: "خطط السنة الجديدة", boost: ["مشروع جديد", "افتتاح", "توسع"] }
+  return { key: "default", ar: "الموسم العام", boost: [] }
 }
 
 export const SOURCE_STATUSES = ["ACTIVE", "PAUSED", "ERROR", "DISABLED"] as const
@@ -113,6 +226,7 @@ export const JOB_TYPES = [
   "DISCOVERY", "SOURCE_SYNC", "CONTENT_PROCESSING", "LEAD_QUALIFICATION",
   "DEEP_RESEARCH", "ENRICHMENT", "WEBSITE_CRAWL", "GOOGLE_MAPS_SYNC",
   "REVIEW_ANALYSIS", "EMBEDDING", "ALERT", "AUTOMATION", "REPORT", "CLEANUP",
+  "REACTIVATION", "SOURCE_EVALUATION",
 ] as const
 export const JOB_STATUSES = ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "RETRYING", "CANCELLED"] as const
 export const JOB_STATUS_LABELS: Record<string, string> = {

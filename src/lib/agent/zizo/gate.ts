@@ -33,6 +33,26 @@ export function accountsFor(channel: string): string[] {
 
 /** حساب الأقل استخدام النهاردة على القناة دي (round-robin بالحِمل) */
 async function pickAccount(wsId: string, channel: string, startOfDay: Date): Promise<string> {
+  // 1) حسابات الداتابيز الصالحة (PlatformAccount): ACTIVE أو COOLDOWN منتهي — WARMING مستبعد
+  const dbAccounts = await db.platformAccount
+    .findMany({ where: { workspaceId: wsId, platform: channel, status: { in: ["ACTIVE", "COOLDOWN"] } } })
+    .catch(() => [])
+  const now = new Date()
+  const usable: Array<{ handle: string; sentToday: number; dailyLimit: number }> = []
+  for (const a of dbAccounts) {
+    if (a.cooldownUntil && a.cooldownUntil > now) continue
+    if (a.lastSentAt && a.lastSentAt < startOfDay && a.sentToday > 0) {
+      // تصفير عدّاد كسول — عدّاد اليوم القديم ميمنعش إرسال النهاردة
+      await db.platformAccount.update({ where: { id: a.id }, data: { sentToday: 0 } }).catch(() => undefined)
+    }
+    const sentToday = a.lastSentAt && a.lastSentAt >= startOfDay ? a.sentToday : 0
+    if (sentToday < a.dailyLimit) usable.push({ handle: a.handle, sentToday, dailyLimit: a.dailyLimit })
+  }
+  if (usable.length) {
+    const sorted = [...usable].sort((x, y) => x.sentToday - y.sentToday)
+    return sorted[0].handle
+  }
+  // 2) fallback: حسابات env
   const accounts = accountsFor(channel)
   if (accounts.length === 1) return accounts[0]
   const counts = await Promise.all(
@@ -84,6 +104,14 @@ export async function gateCheck(wsId: string, channel: string, cfg: ZizoConfig, 
       return { allowed: false, reason: `بدري — آخر رسالة من ${gapMin} دقيقة والفجوة الآمنة ${cfg.minGapMinutes} دقيقة`, account }
     }
   }
+
+  // تسجيل الحصة على حساب الداتابيز لو الرسالة هتخرج منه (multi-account accounting)
+  await db.platformAccount
+    .updateMany({
+      where: { workspaceId: wsId, platform: channel, handle: account },
+      data: { sentToday: { increment: 1 }, lastSentAt: now },
+    })
+    .catch(() => undefined)
 
   return { allowed: true, reason: `داخل الحصة (${sentToday}/${cap} النهاردة)`, account }
 }

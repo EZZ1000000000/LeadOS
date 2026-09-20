@@ -1,15 +1,16 @@
 "use client";
 // LeadOS — Leads table + filters + saved views (doc §48.3, §24)
 import { useMemo, useState } from "react"
-import { useApi, apiSend, ScoreBadge, TempBadge, StatusBadge, IntentBadge, SourceBadge, timeAgo, LoadingBlock, EmptyState } from "../shared"
+import { useApi, apiSend, ScoreBadge, TempBadge, StatusBadge, IntentBadge, SourceBadge, timeAgo, LoadingBlock, EmptyState, apiGet } from "../shared"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
-import { Search, Plus, Bookmark, Users } from "lucide-react"
+import { Search, Plus, Bookmark, Users, Upload, Link2 } from "lucide-react"
 import { LEAD_STATUSES, LEAD_STATUS_LABELS, SOURCE_TYPES, LEAD_SOURCE_TYPE_LABELS, SERVICE_CATALOG, INDUSTRY_CATALOG, serviceAr, industryAr } from "@/lib/constants"
 
 interface LeadRow {
@@ -182,6 +183,8 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
               </div>
             </DialogContent>
           </Dialog>
+          <CsvImportDialog onDone={refresh} />
+          <FormLinkDialog />
         </CardContent>
       </Card>
 
@@ -243,5 +246,113 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// ═══════════ استيراد CSV / قايمة ليدز خارجية ═══════════
+export function CsvImportDialog({ onDone }: { onDone: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [raw, setRaw] = useState("")
+  const [autoEnroll, setAutoEnroll] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const { toast } = useToast()
+
+  // يقبل: CSV (اسم,تليفون,مدينة) أو أسطر حرة "الاسم - 010xxxx" أو تليفون في كل سطر
+  function parseRows(text: string) {
+    const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean)
+    const rows: Array<{ name?: string; phone?: string; city?: string }> = []
+    for (const line of lines) {
+      if (/^(اسم|name)\b/i.test(line) && /[,;\t]/.test(line)) continue // header
+      const parts = line.split(/[,;\t|]/).map((p) => p.trim())
+      if (parts.length >= 2 && parts[1]) {
+        rows.push({ name: parts[0] || undefined, phone: parts[1] || undefined, city: parts[2] || undefined })
+      } else {
+        // سطر حر: "اسم المحل 01012345678" أو رقم لوحده
+        const phoneMatch = line.match(/(?:\+?20|0)?1[0125]\s?\d{4}\s?\d{4}/)
+        if (phoneMatch) {
+          const name = line.replace(phoneMatch[0], "").replace(/[-–—:]+$/, "").trim()
+          rows.push({ name: name || undefined, phone: phoneMatch[0].replace(/\s/g, "") })
+        } else rows.push({ name: line })
+      }
+    }
+    return rows
+  }
+
+  const doImport = async () => {
+    const rows = parseRows(raw)
+    if (!rows.length) { toast({ title: "مفيش صفوف مقروءة — كل سطر: اسم,تليفون,مدينة" }); return }
+    setBusy(true)
+    try {
+      const res = await apiSend<{ created: number; duplicates: number; total: number }>("/api/leads/import", "POST", { rows, autoEnroll })
+      toast({ title: `تم الاستيراد: ${res.created} جديد · ${res.duplicates} مكرر من ${res.total}` })
+      setRaw(""); setOpen(false); onDone()
+    } catch (e) {
+      toast({ title: e instanceof Error ? e.message : "فشل الاستيراد", variant: "destructive" })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button variant="outline" className="gap-1.5"><Upload className="h-4 w-4" /> استيراد</Button></DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>استيراد ليدز من CSV أو قايمة</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">كل سطر: <code className="rounded bg-secondary px-1">اسم,تليفون,مدينة</code> — أو الصق أرقام بس وبيتتعرف عليها تلقائيًا. المكرر بيتفلتر لوحده.</p>
+          <Textarea className="min-h-40 font-mono text-xs" dir="ltr" value={raw} onChange={(e) => setRaw(e.target.value)}
+            placeholder={"مطعم النيل,01012345678,القاهرة\nصيدلية الشفاء,01187654321,الجيزة\n01098765432"} />
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input type="checkbox" checked={autoEnroll} onChange={(e) => setAutoEnroll(e.target.checked)} />
+            تجنيدهم تلقائيًا في سلسلة المتابعة (مهام جاهزة بإرسال بضغطة)
+          </label>
+          <Button className="w-full" onClick={doImport} disabled={busy}>{busy ? "جارٍ الاستيراد..." : "استيراد"}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ═══════════ رابط نموذج الليدز العام (إنباوند + ريفيرال) ═══════════
+export function FormLinkDialog() {
+  const [open, setOpen] = useState(false)
+  const [slug, setSlug] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const { toast } = useToast()
+
+  const load = async () => {
+    try {
+      const me = await apiGet<{ workspace: { slug: string } }>("/api/me")
+      setSlug(me.workspace.slug)
+    } catch { setSlug(null) }
+  }
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : ""
+  const formUrl = slug ? `${baseUrl}/lead-form?ws=${slug}` : ""
+  const refUrl = slug ? `${formUrl}&ref=${encodeURIComponent("صديق")}` : formUrl
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (v) load() }}>
+      <DialogTrigger asChild><Button variant="outline" className="gap-1.5"><Link2 className="h-4 w-4" /> رابط النموذج</Button></DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle>نموذج ليدز إنباوند</DialogTitle></DialogHeader>
+        <div className="space-y-3 text-xs text-muted-foreground">
+          <p>الرابط ده نموذج عام بيسجل الليد مباشرة في النظام — حطه في بيو السوشيال أو ابعتله لعملاء راضين (ريفيرال):</p>
+          {slug ? (
+            <>
+              <div className="rounded-lg border border-border/60 p-2">
+                <p className="mb-1 font-bold text-foreground">رابط النموذج الأساسي</p>
+                <code className="block break-all text-[10px]" dir="ltr">{formUrl}</code>
+                <Button size="sm" variant="outline" className="mt-1.5 h-7 text-[10px]" onClick={() => { navigator.clipboard.writeText(formUrl); setCopied(true); toast({ title: "تم النسخ ✅" }) }}>
+                  {copied ? "اتنسخ" : "نسخ"}
+                </Button>
+              </div>
+              <div className="rounded-lg border border-border/60 p-2">
+                <p className="mb-1 font-bold text-foreground">رابط الريفيرال (بيتسمّى REFERRAL ويبقى بثقة أعلى)</p>
+                <code className="block break-all text-[10px]" dir="ltr">{refUrl}</code>
+                <Button size="sm" variant="outline" className="mt-1.5 h-7 text-[10px]" onClick={() => { navigator.clipboard.writeText(refUrl); toast({ title: "تم النسخ ✅" }) }}>نسخ</Button>
+              </div>
+            </>
+          ) : <p>جارٍ تحميل الرابط...</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

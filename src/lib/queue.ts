@@ -9,6 +9,8 @@ import { classifyContent } from "@/lib/classification"
 import { findDuplicateLead, normalizePhone } from "@/lib/dedup"
 import { recomputeLeadScore } from "@/lib/scoring"
 import { runDeepResearch } from "@/lib/research"
+import { enrollLead, processDueEnrollments, reactivationSweep } from "@/lib/sequences"
+import { PLATFORM_SITES } from "@/lib/discovery"
 
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 
@@ -313,6 +315,16 @@ export async function ingestDiscoveredItems(
     leadsCreated++
     await recomputeLeadScore(lead.id, { workspaceId: wsId })
 
+    // سلاسل المتابعة: تجنيد تلقائي للليد الجديد في سلسلة النشر (لو مفعّلة)
+    // سياسة الرد-فقط: الخطوات بتطلع مهام بنص جاهز — مفيش إرسال آلي استباقي
+    try {
+      const nurtureSeq = await db.sequence.findFirst({
+        where: { workspaceId: wsId, enabled: true, kind: "NURTURE" },
+        select: { id: true, steps: { where: { active: true }, select: { id: true }, take: 1 } },
+      })
+      if (nurtureSeq?.steps.length) await enrollLead(wsId, lead.id, nurtureSeq.id)
+    } catch { /* السلاسل اختيارية — فشل التجنيد ميوقفش الاكتشاف */ }
+
     // Hot leads go straight to Deep Research (doc §70)
     if (rule?.startResearch !== false && classification.score >= 80) {
       const run = await db.researchRun.create({
@@ -335,6 +347,69 @@ async function processResearchJob(jobId: string): Promise<string> {
   if (run.status === "COMPLETED") return "already done"
   await runDeepResearch(job.workspaceId, payload.leadId, payload.researchRunId, run.depth)
   return "research completed"
+}
+
+// ══════════ الموجة الجديدة: إعادة التفعيل + التقييم الذاتي للمصادر ══════════
+
+async function processReactivationJob(jobId: string): Promise<string> {
+  const job = await db.job.findUnique({ where: { id: jobId } })
+  if (!job) return "job missing"
+  const { enrolled, skipped } = await reactivationSweep(job.workspaceId)
+  return `reactivation enrolled=${enrolled} skipped=${skipped}`
+}
+
+/** التقييم الذاتي للمصادر (طلب: زيزو يطور مصادره لوحده) — أسبوعيًا */
+async function processSourceEvaluationJob(jobId: string): Promise<string> {
+  const job = await db.job.findUnique({ where: { id: jobId } })
+  if (!job) return "job missing"
+  const wsId = job.workspaceId
+  const sources = await db.source.findMany({
+    where: { workspaceId: wsId },
+    select: { id: true, name: true, type: true, status: true, _count: { select: { contents: true } } },
+  })
+  const stats: Array<{ name: string; type: string; contents: number; leads: number; conversions: number }> = []
+  for (const s of sources) {
+    const leads = await db.leadContent.count({ where: { content: { sourceId: s.id } } })
+    const conversions = leads
+      ? await db.lead.count({ where: { status: "WON", contentLinks: { some: { content: { sourceId: s.id } } } } })
+      : 0
+    stats.push({ name: s.name, type: s.type, contents: s._count.contents, leads, conversions })
+  }
+  const usedTypes = new Set(sources.map((s) => s.type))
+  const unused = Object.keys(PLATFORM_SITES).filter((t) => !usedTypes.has(t))
+  const zeroYield = stats.filter((s) => s.contents >= 20 && s.leads === 0)
+  const top = [...stats].sort((a, b) => b.leads - a.leads)[0]
+
+  const summary = [
+    `مصادر نشطة: ${sources.length}`,
+    top && top.leads > 0 ? `أعلى مصدر: «${top.name}» بـ ${top.leads} ليد` : "مفيش مصدر جاب ليدز لسه",
+    zeroYield.length ? `مصادر ضعيفة (${zeroYield.length}): ${zeroYield.slice(0, 3).map((s) => s.name).join("، ")}` : "",
+    unused.length ? `أنواع مش مستخدمة ممكن تجيب ليدز: ${unused.slice(0, 6).join("، ")}` : "",
+  ].filter(Boolean).join(" | ")
+
+  await db.agentInsight.create({
+    data: {
+      workspaceId: wsId,
+      kind: "platform_signal",
+      pattern: "source_evaluation_weekly",
+      note: summary,
+      evidence: { stats, unusedSourceTypes: unused } as Prisma.InputJsonValue,
+      weight: 2,
+    },
+  })
+  if (zeroYield.length || unused.length) {
+    await db.alert.create({
+      data: {
+        workspaceId: wsId,
+        type: "SOURCE_EVALUATION",
+        title: "تقرير زيزو الأسبوعي عن المصادر",
+        message: summary,
+        severity: "INFO",
+        actionUrl: "/sources",
+      },
+    })
+  }
+  return summary.slice(0, 200)
 }
 
 /** Main tick: create scheduled discovery jobs from rules, then process a batch. */
@@ -378,6 +453,8 @@ export async function processTick(maxJobs = 6): Promise<{ processed: number; det
       let result = ""
       if (job.type === "DISCOVERY") result = await processDiscoveryJob(job.id)
       else if (job.type === "DEEP_RESEARCH") result = await processResearchJob(job.id)
+      else if (job.type === "REACTIVATION") result = await processReactivationJob(job.id)
+      else if (job.type === "SOURCE_EVALUATION") result = await processSourceEvaluationJob(job.id)
       else result = `no handler for type ${job.type}`
       await db.job.update({
         where: { id: job.id },
@@ -399,5 +476,43 @@ export async function processTick(maxJobs = 6): Promise<{ processed: number; det
       details.push(`${job.type}: FAILED (${err instanceof Error ? err.message.slice(0, 120) : err})`)
     }
   }
+  // 3) سلاسل المتابعة: معالجة الخطوات المستحقة (لكل ورشة عليها مستحق)
+  const dueWs = await db.sequenceEnrollment.findMany({
+    where: { status: "ACTIVE", nextStepAt: { lte: new Date() } },
+    distinct: ["workspaceId"],
+    select: { workspaceId: true },
+    take: 5,
+  })
+  for (const { workspaceId } of dueWs) {
+    try {
+      const r = await processDueEnrollments(workspaceId, 10)
+      if (r.processed || r.completed) details.push(`SEQUENCE: steps=${r.processed} completed=${r.completed} tasks=${r.tasks}`)
+    } catch (err) {
+      details.push(`SEQUENCE: FAILED (${err instanceof Error ? err.message.slice(0, 100) : err})`)
+    }
+  }
+
+  // 4) إعادة التفعيل: مسح يومي للليدز الباردة (كل 20 ساعة)
+  const lastReactivation = await db.job.findFirst({
+    where: { type: "REACTIVATION", createdAt: { gte: new Date(Date.now() - 20 * 3600_000) } },
+    select: { id: true },
+  })
+  if (!lastReactivation) {
+    const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 5 })
+    for (const w of wsIds) await enqueueJob(w.id, "REACTIVATION", {}, 30, new Date(Date.now() + 60_000))
+    details.push("REACTIVATION sweep scheduled")
+  }
+
+  // 5) التقييم الذاتي للمصادر: أسبوعيًا (كل 7 أيام)
+  const lastEval = await db.job.findFirst({
+    where: { type: "SOURCE_EVALUATION", createdAt: { gte: new Date(Date.now() - 7 * 24 * 3600_000) } },
+    select: { id: true },
+  })
+  if (!lastEval) {
+    const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 5 })
+    for (const w of wsIds) await enqueueJob(w.id, "SOURCE_EVALUATION", {}, 20, new Date(Date.now() + 120_000))
+    details.push("SOURCE_EVALUATION scheduled")
+  }
+
   return { processed: jobs.length, details, scheduledRules }
 }

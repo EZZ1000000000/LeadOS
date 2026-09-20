@@ -4,7 +4,7 @@
 // `site:` operators, or Google Places when GOOGLE_MAPS_API_KEY is present.
 // No sample/mock generators: if a platform returns nothing, it returns nothing.
 import type { Prisma } from "@prisma/client"
-import { asArray } from "@/lib/constants"
+import { asArray, seasonFor, EGYPT_GOVERNORATES } from "@/lib/constants"
 
 export interface DiscoveredItem {
   externalId: string
@@ -63,14 +63,105 @@ export function buildSearchPlan(rule: {
     }
   }
   if (!queries.length) queries.push(rule.name)
+  // ══ التوسيع الكبير (طلب: زود عدد الليدز) ══
+  // 1) كل استعلام يتفتّح لأشكال عامية/دوركات/موسمية بدوران بالساعة — كل مسح يجيب نتائج جديدة
+  // 2) التوسيع الجغرافي: محافظة مختلفة كل يوم — مسح مصر محافظة بمحافظة
+  const govIdx = new Date().getUTCDate() % EGYPT_GOVERNORATES.length
+  const gov = EGYPT_GOVERNORATES[govIdx]
+  const expanded: string[] = []
+  const seen = new Set<string>()
+  // الاستعلامات الأصلية أهم — ثابتة أولًا بدون دوران
+  for (const q of queries.slice(0, 4)) {
+    if (!seen.has(q)) { seen.add(q); expanded.push(q) }
+  }
+  for (const q of queries.slice(0, 6)) {
+    for (const v of expandQueryEgyptian(q, { max: 6, dorks: true })) {
+      if (!seen.has(v)) { seen.add(v); expanded.push(v) }
+    }
+  }
+  // نسخة المحافظة اليومية (توسيع جغرافي تدريجي)
+  if (industries.length || services.length) {
+    expanded.push(`${industries.join(" ") || "بيزنس"} ${services.join(" ") || "خدمات"} ${gov}`.replace(/\s+/g, " ").trim())
+  }
   return {
     goal: rule.name,
-    queries: queries.slice(0, 6),
+    queries: expanded.slice(0, 14),
     sources: ["web", "social", "business"],
     freshness_days: 14,
     min_score: 50,
     language: ["ar", "en"],
   }
+}
+
+// ═══════════ مولّد الاستعلامات الموسّع (طلب: زود عدد الليدز — عامية + دوركينج + موسمية + جغرافيا) ═══════════
+
+/** أشكال عصرية لنفس النية — كل استعلام واحد يطلع 10-15 طريقة بحث مختلفة بيوصّل لمنشورات مختلفة */
+const INTENT_SLANG = [
+  (x: string) => `محتاج ${x}`,
+  (x: string) => `عايز ${x}`,
+  (x: string) => `عاوز ${x}`,
+  (x: string) => `محتاجين ${x}`,
+  (x: string) => `حد يعرف حد ${x}`,
+  (x: string) => `مين يعرف ${x}`,
+  (x: string) => `مين ينصحني ${x}`,
+  (x: string) => `بدور على ${x}`,
+  (x: string) => `ترشيح ${x}`,
+  (x: string) => `بديل ${x}`,
+  (x: string) => `${x} كام`,
+  (x: string) => `${x} فين`,
+  (x: string) => `شركة ${x}`,
+  (x: string) => `looking for ${x}`,
+  (x: string) => `need recommendation ${x}`,
+]
+
+/** دوركات جوجل المتقدمة — بتوصل لمنشورات ومستندات البحث العادي مش بيطلعها */
+const DORK_TEMPLATES = [
+  (x: string) => `site:facebook.com/groups ${x}`,
+  (x: string) => `site:facebook.com "${x}" ("محتاج" OR "عايز" OR "حد يعرف")`,
+  (x: string) => `("${x}") ("الإيميل" OR "البريد الإلكتروني" OR "contact us" OR "email")`,
+  (x: string) => `filetype:pdf OR filetype:xlsx "قائمة أسعار" ${x}`,
+  (x: string) => `inurl:contact "${x}" مصر`,
+]
+
+function mulberry32(seed: number) {
+  let a = seed >>> 0
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** بذرة دوران حسب الساعة — كل جولة اكتشاف تشوف شكل مختلف من الاستعلامات = ليدز جديدة من نفس المصدر */
+function rotationSeed(): number {
+  const now = new Date()
+  return now.getUTCDate() * 24 + now.getUTCHours()
+}
+
+/**
+ * توسيع استعلام واحد لأكبر عدد أشكال (عامية مصرية + إنجليزي + دوركات + موسمية).
+ * بيدور النتايج بالساعة عشان كل مسح يجيب نتائج جديدة.
+ */
+export function expandQueryEgyptian(seed: string, opts?: { max?: number; dorks?: boolean }): string[] {
+  const max = opts?.max ?? 14
+  const useDorks = opts?.dorks ?? true
+  const clean = seed.replace(/\s+/g, " ").trim()
+  if (!clean) return []
+  const variants = new Set<string>([clean])
+  for (const f of INTENT_SLANG) variants.add(f(clean))
+  if (useDorks) for (const f of DORK_TEMPLATES) variants.add(f(clean))
+  // موسمية مصرية: كلمات التوب حسب الشهر
+  const season = seasonFor(new Date().getMonth() + 1)
+  if (season.boost.length) variants.add(`${clean} ${season.boost[variants.size % season.boost.length]}`)
+  // دوران ثابت بالساعة: الخلط يضمن تغطية أشكال مختلفة عبر الجولات
+  const rnd = mulberry32(rotationSeed() + clean.length)
+  const list = [...variants]
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1))
+    ;[list[i], list[j]] = [list[j], list[i]]
+  }
+  return list.slice(0, max)
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -431,6 +522,12 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   // منصات اضافية حقيقية (طلب: زيزو يوصل لأي مصدر): اوليكس/هاتلا + منصات العمل الحر العربية
   MARKETPLACE: ["olx.com.eg", "dubizzle.com.eg", "hatla2ee.com"],
   FREELANCE: ["mostaql.com", "khamsat.com", "bahr.sa"],
+  // الموجة الجديدة: أعلى نية شراء بأقل خطر حظر (طلبات 24/25)
+  ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads"],
+  REVIEWS: ["google.com/maps", "tripadvisor.com", "elmenus.com"],
+  EVENTS: ["facebook.com/events", "egyta.com", "cairoict.com", "egyfoodexpo.com"],
+  QUORA: ["quora.com", "ar.quora.com"],
+  DISCORD: ["discord.com", "discord.gg"],
 }
 
 // تثبيت جغرافي ذكي: مصر افتراضيًا — إلا لو الاستعلام خليجي (الرياض/دبي...) ساعتها من غير تثبيت
@@ -571,10 +668,10 @@ export async function runDiscovery(
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
   const RECENT = 14
 
-  const maxSearches = 6 // hard cap per job — keeps ticks inside serverless time budgets
+  const maxSearches = 10 // hard cap per job — was 6; raised for the lead-volume wave (still time-budget safe)
   let searches = 0
 
-  for (const q of queries.slice(0, 3)) {
+  for (const q of queries.slice(0, 4)) {
     for (const st of types) {
       if (searches >= maxSearches || items.length >= limitPerQuery * 4) break
       let batch: DiscoveredItem[] = []

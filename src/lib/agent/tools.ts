@@ -4,7 +4,8 @@
 // وتتفعل تلقائيًا أول ما متغير البيئة يبقى موجود — بدون تعديل كود.
 import { db } from "@/lib/db"
 import { agentWebSearch, placesToItems, runDiscovery, type DiscoveredItem } from "@/lib/discovery"
-import { ingestDiscoveredItems } from "@/lib/queue"
+import { ingestDiscoveredItems, enqueueJob } from "@/lib/queue"
+import { NICHE_PACKS } from "@/lib/constants"
 import { heuristicClassify } from "@/lib/classification"
 import {
   ensureStealth,
@@ -441,6 +442,140 @@ export const AGENT_TOOLS: AgentTool[] = [
       } catch {
         return { ok: false, note: "Ollama غير قابل للوصول" }
       }
+    },
+  },
+  // ═══════════ الموجة الجديدة: قنوات تواصل وأدوات حصاد إضافية ═══════════
+  {
+    name: "call_script",
+    description: "سكريبت مكالمة مبيعات مصري جاهز لأي ليد — مبني على بحث الليد واحتياجاته (قناة تواصل جديدة بالكامل)",
+    gate: "ready",
+    run: async (args) => {
+      const leadId = String(args.lead_id ?? "")
+      if (!leadId) return { ok: false, note: "lead_id مفقود" }
+      const lead = await db.lead.findUnique({
+        where: { id: leadId },
+        include: {
+          business: { select: { name: true, industry: true, city: true, phone: true, rating: true, reviewCount: true } },
+          person: { select: { fullName: true } },
+        },
+      })
+      if (!lead) return { ok: false, note: "الليد غير موجود" }
+      const name = lead.person?.fullName?.split(" ")[0] || "باشا"
+      const biz = lead.business
+      const needs = Array.isArray(lead.serviceNeeds) ? (lead.serviceNeeds as string[]).slice(0, 3).join(" و") : ""
+      const script = [
+        `📋 سكريبت مكالمة — ${biz?.name ?? "العميل"} (${biz?.city ?? "مصر"})`,
+        ``,
+        `1) الافتتاحية:`,
+        `«مساء الخير، مع ${name}؟ أنا من فريق بيساعد ${biz?.industry ?? "البيزنسات"} في ${biz?.city ?? "مصر"} على ${needs || "تنظيم الشغل بالأنظمة"}. مش هاخد من وقتك غير دقيقة.»`,
+        ``,
+        `2) الخطاف (من بحث الليد):`,
+        lead.whyNow
+          ? `«بصيت على شغلكم ولقيت: ${lead.whyNow.slice(0, 120)} — ده اللي خلااني أتصل.»`
+          : `«شفت ${biz?.name ?? "نشاطكم"} ${biz?.rating ? `بتقييم ${biz.rating} من ${biz.reviewCount ?? 0} — ده رقم محترم` : "واحد من الأسماء الممتازة في المجال"} وقولت لازم أتواصل.»`,
+        ``,
+        `3) سؤال التشخيص:`,
+        `«دلوقتي ${biz?.name ?? "عندكم"} — الحاجات بتدار إزاي؟ كاشير؟ حجوزات؟ ولا كله على الورق لسه؟»`,
+        ``,
+        `4) العرض المختصر:`,
+        `«إحنا بنعمل بالظبط ده — ${needs || "نظام متكامل"} بيتظبط على مقاس ${biz?.industry ?? "البيزنس"}، وبتشوف النتيجة من أول أسبوع.»`,
+        ``,
+        `5) إغلاق الموعد:`,
+        `«تحب أبعتلك على الواتساب أمثلة من شغلنا مع ${biz?.industry ?? "مجالك"}؟ أو نظبط ميعاد 15 دقيقة أشرحلك بالراحة؟»`,
+        ``,
+        `⚠️ ملاحظات: اتكلم بصبر وسيب العميل يتكلم — لو قال «مش مهتم» اشكره واسأل إمتى وقت مناسب، وسيب الموضوع.`,
+      ].join("\n")
+      return { ok: true, note: `سكريبت المكالمة جاهز لـ ${biz?.name ?? name}`, data: { script } }
+    },
+  },
+  {
+    name: "find_email",
+    description: "منجم إيميلات: يدور على موقع بيزنس الليد وصفحة التواصل ويستخرج الإيميل والتليفونات ويسجلهم",
+    gate: "ready",
+    run: async (args) => {
+      const leadId = String(args.lead_id ?? "")
+      if (!leadId) return { ok: false, note: "lead_id مفقود" }
+      const lead = await db.lead.findUnique({ where: { id: leadId }, include: { business: true } })
+      if (!lead?.business) return { ok: false, note: "الليد من غير بيزنس" }
+      const site = lead.business.websiteUrl
+      if (!site) return { ok: false, note: "البيزنس من غير موقع — جرب مصادر تانية للإيميل" }
+      const candidates = [site, `${site.replace(/\/$/, "")}/contact`, `${site.replace(/\/$/, "")}/contact-us`, `${site.replace(/\/$/, "")}/about`]
+      let found: { emails: string[]; phones: string[]; socials: string[] } = { emails: [], phones: [], socials: [] }
+      for (const url of candidates.slice(0, 3)) {
+        const page = await fetchPage(url, 10000)
+        if (!page.ok) continue
+        const text = htmlToText(page.html)
+        found = extractContacts(text)
+        if (found.emails.length) break
+      }
+      if (found.emails.length && !lead.business.email) {
+        await db.business.update({ where: { id: lead.business.id }, data: { email: found.emails[0] } }).catch(() => undefined)
+      }
+      return {
+        ok: found.emails.length > 0,
+        note: found.emails.length
+          ? `لقيت ${found.emails.length} إيميل من موقع ${site}`
+          : `مفيش إيميل ظاهر على ${site} — جرب صفحة التواصل يدوي أو الرسايل`,
+        data: found,
+      }
+    },
+  },
+  {
+    name: "niche_hunt",
+    description: "حزم النيتش الجاهزة: مسح نيتش كامل (مطاعم/صيدليات/عيادات/جيمات/مصانع...) بضغطة — بيعمل قاعدة بحث وجدولة اكتشاف فوري",
+    gate: "ready",
+    run: async (args) => {
+      const wsId = String(args.workspace_id ?? "")
+      const nicheKey = String(args.niche ?? "").toLowerCase()
+      if (!wsId || !nicheKey) return { ok: false, note: "workspace_id أو niche مفقود" }
+      const pack = NICHE_PACKS.find((p) => p.key === nicheKey || p.ar === args.niche)
+      if (!pack) {
+        return { ok: false, note: `نيتش غير معروف — المتاح: ${NICHE_PACKS.map((p) => `${p.key} (${p.ar})`).join("، ")}` }
+      }
+      const ruleName = `حزمة نيتش: ${pack.ar}`
+      let rule = await db.searchRule.findFirst({ where: { workspaceId: wsId, name: ruleName } })
+      if (!rule) {
+        rule = await db.searchRule.create({
+          data: {
+            workspaceId: wsId,
+            name: ruleName,
+            description: `مسح آلي لنيتش ${pack.ar} عبر ${pack.sourceTypes.join("، ")}`,
+            enabled: true,
+            priority: 110,
+            industries: pack.industries as unknown as import("@prisma/client").Prisma.InputJsonValue,
+            services: pack.services as unknown as import("@prisma/client").Prisma.InputJsonValue,
+            keywords: pack.keywords as unknown as import("@prisma/client").Prisma.InputJsonValue,
+            sourceTypes: pack.sourceTypes as unknown as import("@prisma/client").Prisma.InputJsonValue,
+          },
+        })
+      }
+      await enqueueJob(wsId, "DISCOVERY", { ruleId: rule.id, sourceTypes: pack.sourceTypes }, 70)
+      return { ok: true, note: `نيتش ${pack.ar}: القاعدة جاهزة وأول مسح اتطلّب فورًا (${pack.sourceTypes.length} منصات)`, data: { ruleId: rule.id, sources: pack.sourceTypes } }
+    },
+  },
+  {
+    name: "competitor_sweep",
+    description: "مسح أثر المنافس: يجيب كل اللي بيتكلم عن منافس معين (متابعين/مراجعات/شكاوى) — عملاء المنافس أصدق قايمة ليدز",
+    gate: "ready",
+    run: async (args) => {
+      const wsId = String(args.workspace_id ?? "")
+      const competitor = String(args.competitor ?? "").trim()
+      if (!wsId || !competitor) return { ok: false, note: "workspace_id أو competitor مفقود" }
+      let source = await db.source.findFirst({ where: { workspaceId: wsId, type: "REVIEWS" } })
+        ?? await db.source.findFirst({ where: { workspaceId: wsId, type: "GOOGLE_SEARCH" } })
+      if (!source) {
+        source = await db.source.create({ data: { workspaceId: wsId, type: "GOOGLE_SEARCH", name: "مسح المنافسين" } })
+      }
+      const queries = [
+        `"${competitor}" (شكوى OR زعلان OR مشكلة OR سيء)`,
+        `"${competitor}" (بديل OR ترشيح OR أفضل من)`,
+        `site:google.com/maps "${competitor}" تقييم`,
+        `"${competitor}" (محتاج OR عايز OR بيدور على)`,
+      ]
+      const { items } = await runDiscovery(["GOOGLE_SEARCH", "REVIEWS"], queries, 5)
+      if (!items.length) return { ok: true, note: `مفيش نتائج ظاهرة دلوقتي عن «${competitor}» — جرب تاني بعد فترة` }
+      const { created, duplicates } = await ingestDiscoveredItems(wsId, source, null, items)
+      return { ok: true, note: `مسح «${competitor}»: ${items.length} إشارة → ${created} ليد جديد (${duplicates} مكرر)`, data: { created, duplicates } }
     },
   },
 ]

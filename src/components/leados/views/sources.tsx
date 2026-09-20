@@ -11,8 +11,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { Database, Plus, Trash2, Activity, AlertCircle } from "lucide-react"
-import { SOURCE_TYPES, SOURCE_TYPE_LABELS } from "@/lib/constants"
+import { Database, Plus, Trash2, Activity, AlertCircle, Zap } from "lucide-react"
+import { SOURCE_TYPES, SOURCE_TYPE_LABELS, NICHE_PACKS } from "@/lib/constants"
 
 interface SourceRow {
   id: string
@@ -67,8 +67,39 @@ export function SourcesView() {
   if (loading && !data) return <LoadingBlock />
   const sources = data?.sources ?? []
 
+  const huntNiche = async (packKey: string, packAr: string) => {
+    try {
+      await apiSend("/api/rules", "POST", {
+        name: `حزمة نيتش: ${packAr}`,
+        description: `مسح آلي لنيتش ${packAr} بضغطة واحدة`,
+        industries: NICHE_PACKS.find((p) => p.key === packKey)?.industries ?? [],
+        services: NICHE_PACKS.find((p) => p.key === packKey)?.services ?? [],
+        keywords: NICHE_PACKS.find((p) => p.key === packKey)?.keywords ?? [],
+        sourceTypes: NICHE_PACKS.find((p) => p.key === packKey)?.sourceTypes ?? [],
+      })
+      toast({ title: `نيتش ${packAr}: قاعدة البحث اتعملت والمسح هيبدأ في أول تيك` })
+      refresh()
+    } catch (e) {
+      toast({ title: e instanceof Error ? e.message : "خطأ في إنشاء حزمة النيتش", variant: "destructive" })
+    }
+  }
+
   return (
     <div className="space-y-4">
+      <Card className="border-violet-500/25 bg-violet-500/5">
+        <CardContent className="p-4">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-bold text-violet-200"><Zap className="h-3.5 w-3.5" /> حزم نيتش جاهزة — مسح سوق كامل بضغطة</p>
+          <div className="flex flex-wrap gap-1.5">
+            {NICHE_PACKS.map((p) => (
+              <button key={p.key} onClick={() => huntNiche(p.key, p.ar)}
+                className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium hover:bg-violet-500/20"
+                title={`${p.industries.length} صناعات · ${p.sourceTypes.length} منصات`}>
+                {p.icon} {p.ar}
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">كل مصدر له Adapter مستقل يعمل حسب جدولته — الإيقاف يوقف جمع البيانات من المصدر فورًا</p>
         <Dialog open={open} onOpenChange={setOpen}>

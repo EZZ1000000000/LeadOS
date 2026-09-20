@@ -13,6 +13,7 @@ import { PipelineView } from "./views/pipeline"
 import { ResearchView } from "./views/research"
 import { SourcesView } from "./views/sources"
 import { RulesView } from "./views/rules"
+import { SequencesView } from "./views/sequences"
 import { ChatView } from "./views/chat"
 import { AgentView } from "./views/agent"
 import { EntityView } from "./views/entity"
@@ -24,7 +25,7 @@ import { GroupsView } from "./views/groups"
 import {
   LayoutDashboard, Radar, Users, KanbanSquare, FlaskConical, Database,
   SlidersHorizontal, Bot, BarChart3, CheckSquare, Settings, LogOut,
-  Crosshair, Bell, RefreshCw, MessageSquareDot, Coffee, Megaphone, BrainCircuit, MessagesSquare,
+  Crosshair, Bell, RefreshCw, MessageSquareDot, Coffee, Megaphone, BrainCircuit, MessagesSquare, Repeat,
 } from "lucide-react"
 
 const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ className?: string }> }> = [
@@ -36,6 +37,7 @@ const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<{ clas
   { key: "research", label: "مركز الأبحاث", icon: FlaskConical },
   { key: "sources", label: "المصادر", icon: Database },
   { key: "rules", label: "قواعد البحث", icon: SlidersHorizontal },
+  { key: "sequences", label: "سلاسل المتابعة", icon: Repeat },
   { key: "chat", label: "AI Commander", icon: Bot },
   { key: "agent", label: "الأيجنت الذكي", icon: Crosshair },
   { key: "entity", label: "الكيان المستقل", icon: BrainCircuit },
@@ -253,6 +255,7 @@ export function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
           {view === "research" && <ResearchView onOpenLead={openLead} />}
           {view === "sources" && <SourcesView />}
           {view === "rules" && <RulesView />}
+          {view === "sequences" && <SequencesView />}
           {view === "chat" && <ChatView />}
           {view === "agent" && <AgentView onOpenLead={openLead} />}
           {view === "entity" && <EntityView />}
