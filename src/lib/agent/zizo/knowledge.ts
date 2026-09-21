@@ -671,6 +671,12 @@ export async function ensureKnowledgeSeeded(wsId: string): Promise<void> {
   try {
     const c = await db.agentInsight.count({ where: { workspaceId: wsId, kind: { in: ["sourcing", "presence"] } } })
     if (c < 40) await seedWorkspaceKnowledge(wsId) // 10 مصادر + 36 صناعة = 46 على الأقل
+    // خبرة البيع (17 playbook + إحصائيات موثقة + أسعار مصر + إغلاقات) — سَمّ تلقائي أول مرة
+    const e = await db.agentInsight.count({ where: { workspaceId: wsId, kind: "expertise" } })
+    if (e < 50) {
+      const { seedExpertiseKnowledge } = await import("./expertise")
+      await seedExpertiseKnowledge(wsId)
+    }
   } catch {
     // السَمّ best-effort — مش بيكسر شغل زيزو
   }

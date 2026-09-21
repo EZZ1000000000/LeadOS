@@ -6,6 +6,7 @@ import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-he
 import { zizoReply, zizoTick, zizoOutreach, zizoStatus, openConversation, addClientMessage, pendingApprovals, approveDraft, rejectDraft } from "@/lib/agent/zizo/brain"
 import { zizoConfigOf, AGENCY_SERVICES } from "@/lib/agent/zizo/services"
 import { evolutionStats, decideProposal } from "@/lib/agent/zizo/evolution"
+import { expertiseStatus } from "@/lib/agent/zizo/expertise"
 
 export const maxDuration = 60
 
@@ -56,7 +57,7 @@ export async function GET(req: Request) {
   const pending = await pendingApprovals(wsId)
   const ws = await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } })
   const evo = await evolutionStats(wsId).catch(() => ({ tactics: [], proposals: [], learnings: [] }))
-  return json({ ...status, pending, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })), evolution: evo })
+  return json({ ...status, pending, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })), evolution: evo, expertise: expertiseStatus() })
 }
 
 export async function POST(req: Request) {

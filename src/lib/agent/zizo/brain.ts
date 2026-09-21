@@ -11,6 +11,7 @@ import { SERVICES_DIGEST, servicesHint, zizoConfigOf } from "./services"
 import { humanize, type HumanOut } from "./humanize"
 import { stageLine, pickOpener, detectBooked, inferStage, STAGES, type SaleStage } from "./playbook"
 import { PSYCH_DOCTRINE, detectPsychContext } from "./psychology"
+import { EXPERT_CORE, expertiseBrief, objectionBrief } from "./expertise"
 import { recordTacticUse, evolutionTick } from "./evolution"
 import { gateCheck } from "./gate"
 
@@ -124,12 +125,17 @@ ${market}` : "",
       }`
     : ""
 
+  // خبرة البيع الميدانية: العقيدة دايماً + playbook مجالات العميل + توجيه تفاوضي لو فيه اعتراض
+  const expertBlock = `\n\n${EXPERT_CORE}${
+    expertiseBrief(lastClient) ? `\n\n${expertiseBrief(lastClient)}` : ""
+  }${objectionBrief(lastClient) ? `\n\n${objectionBrief(lastClient)}` : ""}`
+
   const system = `${zizoPersona({
     agencyName: cfg.agencyName,
     servicesDigest: SERVICES_DIGEST,
     memoryCtx,
     stageLine: stageGuide,
-  })}\n\n${HUMAN_RULES}${psychBlock}`
+  })}\n\n${HUMAN_RULES}${psychBlock}${expertBlock}`
   const user = `المحادثة لحد دلوقتي:
 ${chatTranscript(conv.messages) || "(لسه مفيش رسايل)"}
 

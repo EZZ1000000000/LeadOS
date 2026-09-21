@@ -289,28 +289,60 @@ async function logRun(result: AiResult, opts: AiCallOptions, success: boolean, e
 
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
   const task: AiTask = opts.task ?? "chat"
-  if (!KEY_POOL.length) return null
-
   let result: AiResult | null = null
-  outer: for (const model of modelsLive(chainFor(task))) {
-    const keys = pickKeys()
-    let rateLimitedAll = true
-    for (const key of keys) {
-      const out = await callNvidia(model, messages, opts, task, key)
-      if (out.ok) {
-        result = out.result
-        break outer
+
+  if (KEY_POOL.length) {
+    outer: for (const model of modelsLive(chainFor(task))) {
+      const keys = pickKeys()
+      let rateLimitedAll = true
+      for (const key of keys) {
+        const out = await callNvidia(model, messages, opts, task, key)
+        if (out.ok) {
+          result = out.result
+          break outer
+        }
+        // مشكلة مفتاح (rate/ميت)؟ → المفتاح التالي على نفس الموديل فورًا
+        if (out.status === 429 || out.status === 401 || out.status === 403) continue
+        rateLimitedAll = false
+        break // مشكلة موديل/شبكة → الموديل التالي
       }
-      // مشكلة مفتاح (rate/ميت)؟ → المفتاح التالي على نفس الموديل فورًا
-      if (out.status === 429 || out.status === 401 || out.status === 403) continue
-      rateLimitedAll = false
-      break // مشكلة موديل/شبكة → الموديل التالي
+      // كل المفاتيح ضربت rate-limit على الموديل ده → برّده دقيقة عشان النداء الجاي يبدأ بموديل تاني
+      if (rateLimitedAll) noteFailure(model, 429)
     }
-    // كل المفاتيح ضربت rate-limit على الموديل ده → برّده دقيقة عشان النداء الجاي يبدأ بموديل تاني
-    if (rateLimitedAll) noteFailure(model, 429)
   }
+
+  // Fallback: محرك z-ai (شغال بدون مفتاح — بيضمن زيزو مش بيصمت أبداً)
+  if (!result) result = await zaiChat(messages, task)
+
   if (result) void logRun(result, opts, true)
   return result
+}
+
+// ─── محرك z-ai (SDK محلي — fallback بدون مفاتيح خارجية) ───
+let zaiSingleton: { chat: { completions: { create: (args: unknown) => Promise<{ choices?: Array<{ message?: { content?: string } }> }> } } } | null = null
+async function zaiChat(messages: AiMessage[], task: AiTask): Promise<AiResult | null> {
+  try {
+    if (!zaiSingleton) {
+      const mod = (await import("z-ai-web-dev-sdk")) as unknown as { default?: { create: () => Promise<unknown> }; create?: () => Promise<unknown> }
+      const Z = (mod.default ?? mod) as { create: () => Promise<unknown> }
+      zaiSingleton = (await Z.create()) as never
+    }
+    // ملاحظة: ز-ai بيستخدم role=assistant للبرومبت النظامي (حسب توثيقه الرسمي)
+    const mapped = messages.map((m) => ({
+      role: m.role === "system" ? "assistant" : m.role,
+      content: typeof m.content === "string" ? m.content : m.content.map((p: { text?: string }) => p?.text ?? "").join(" "),
+    }))
+    const started = Date.now()
+    const completion = await zaiSingleton.chat.completions.create({
+      messages: mapped,
+      thinking: { type: "disabled" },
+    })
+    const text = completion.choices?.[0]?.message?.content?.trim()
+    if (!text) return null
+    return { text, provider: "ZAI", model: "glm", latencyMs: Date.now() - started, task }
+  } catch {
+    return null
+  }
 }
 
 /** Chat expecting a JSON object back; extracts the first balanced JSON object. */

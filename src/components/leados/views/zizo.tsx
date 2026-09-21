@@ -64,6 +64,7 @@ interface StatusPayload {
     proposals: Array<{ id: string; title: string; kind: string; rationale: string; impact: string | null; status: string; decisionNote: string | null; createdAt: string }>
     learnings: Array<{ pattern: string; note: string; weight: number }>
   }
+  expertise?: { playbooks: number; stats: number; prices: number; closes: number; negotiations: number }
 }
 interface Msg {
   id: string; direction: string; author: string; body: string; sentAt: string; deliverMs: number | null
@@ -270,6 +271,9 @@ export function ZizoView() {
         </Button>
         <Badge variant="outline" className="h-6">
           الحماية: {s.config.maxDailyMessages} رسالة/يوم • فجوة {s.config.minGapMinutes} دقيقة
+        </Badge>
+        <Badge variant="outline" className="h-6">
+          خبرة البيع: {s.expertise ? `${s.expertise.playbooks} مجال • ${s.expertise.stats} إحصائية موثقة ✅` : "خبير ✅"}
         </Badge>
         <Badge variant="outline" className="h-6">
           {s.whatsapp ? "واتساب مربوط ✅" : "إنبوكس يدوي (واتساب غير مربوط)"}

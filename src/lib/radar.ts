@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client"
 import { db } from "@/lib/db"
 import { stealthNavigate, stealthAct } from "@/lib/agent/stealth-browser"
 import { buildPsychComment, COMMENT_ANGLES } from "@/lib/agent/zizo/psychology"
+import { matchPlaybooks } from "@/lib/agent/zizo/expertise"
 import { pickTactic, recordTacticUse, evolutionTick } from "@/lib/agent/zizo/evolution"
 import { zizoConfigOf } from "@/lib/agent/zizo/services"
 
@@ -390,8 +391,9 @@ export async function processDueComments(wsId: string, max = 2): Promise<{ done:
         : await pickTactic(wsId, "comment", angleIds)
     await recordTacticUse(wsId, "comment", angle)
 
-    // التنفيذ الفعلي — تعليق نفسي بشري بالركن المختار
-    const { text, angle: usedAngle } = buildPsychComment(payload.postText ?? "", payload.matched ?? [], angle)
+    // التنفيذ الفعلي — تعليق نفسي بشري بالركن المختار + خبرة سوقية من playbook المجال
+    const expertHook = matchPlaybooks(payload.postText ?? "")[0]?.hook
+    const { text, angle: usedAngle } = buildPsychComment(payload.postText ?? "", payload.matched ?? [], angle, expertHook)
     const result = await postFacebookComment(payload.postUrl ?? "", text)
     if (result.ok) {
       await db.job.update({

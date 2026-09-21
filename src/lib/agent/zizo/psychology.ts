@@ -250,7 +250,7 @@ export function servicePhraseOf(matched: string[]): string {
  * تعليق نفسي بشري: ركن نفسي عشوائي (أو مُوجّه من محرك التطور) + تركيب عشوائي.
  * ممنوع قالب ثابت — نفس الركن بيتصاغ عشر صيغ مختلفة.
  */
-export function buildPsychComment(postText: string, matched: string[], angleOverride?: string): { text: string; angle: string } {
+export function buildPsychComment(postText: string, matched: string[], angleOverride?: string, expertHook?: string): { text: string; angle: string } {
   const service = servicePhraseOf(matched)
   const wa = process.env.ZIZO_WHATSAPP ?? "201067804629"
   const tg = process.env.ZIZO_TELEGRAM ?? "12186496997"
@@ -262,6 +262,11 @@ export function buildPsychComment(postText: string, matched: string[], angleOver
 
   // شخصنة بالسياق: لو المنشور ذكر اسم/مكان نرمق به — أقل من 15% للرمق (بشرية نادرة)
   let body = angle.build(service, wa, wanum, tg)
+  // خبرة سوقية: جملة قيمة بأرقام حقيقية من playbook المجال — بشري مش دايماً (45%) ومقصوصة
+  if (expertHook && Math.random() < 0.45) {
+    const line = expertHook.split(/[.!؟?]/)[0].trim().slice(0, 140)
+    if (line.length > 25) body = `${line}. ${body}`
+  }
   // تليجرام بديل بالتناوب (35% من التعليقات) — المالك طالب القناتين متاحين
   if (Math.random() < 0.35 && !body.includes("t.me")) body += ` — ولو واتساب مش فاتح معاك: ${CTA_TG(tg)}`
   const greet = Math.random()
