@@ -4,6 +4,9 @@
 import type { Prisma } from "@prisma/client"
 import { db } from "@/lib/db"
 import { stealthNavigate, stealthAct } from "@/lib/agent/stealth-browser"
+import { buildPsychComment, COMMENT_ANGLES } from "@/lib/agent/zizo/psychology"
+import { pickTactic, recordTacticUse, evolutionTick } from "@/lib/agent/zizo/evolution"
+import { zizoConfigOf } from "@/lib/agent/zizo/services"
 
 // ══════════ الإعدادات (بيئة قابلة للضبط) ══════════
 const envInt = (k: string, d: number) => {
@@ -378,13 +381,22 @@ export async function processDueComments(wsId: string, max = 2): Promise<{ done:
       continue
     }
 
-    // التنفيذ الفعلي
-    const text = buildHumanComment(payload.postText ?? "", payload.matched ?? [])
+    // الركن النفسي: افتراضي معتمد (لو المالك وافق على مقترح) 70% — الباقي اختيار موزّع بالمتعلم
+    const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } }))?.settings)
+    const angleIds = COMMENT_ANGLES.map((a) => a.id)
+    const angle =
+      cfg.defaultCommentAngle && Math.random() < 0.7
+        ? cfg.defaultCommentAngle
+        : await pickTactic(wsId, "comment", angleIds)
+    await recordTacticUse(wsId, "comment", angle)
+
+    // التنفيذ الفعلي — تعليق نفسي بشري بالركن المختار
+    const { text, angle: usedAngle } = buildPsychComment(payload.postText ?? "", payload.matched ?? [], angle)
     const result = await postFacebookComment(payload.postUrl ?? "", text)
     if (result.ok) {
       await db.job.update({
         where: { id: job.id },
-        data: { status: "SUCCESS", completedAt: new Date(), result: { message: `commented: ${text.slice(0, 80)}`, note: result.note } as Prisma.InputJsonValue },
+        data: { status: "SUCCESS", completedAt: new Date(), result: { message: `commented: ${text.slice(0, 80)}`, note: result.note, angle: usedAngle } as Prisma.InputJsonValue },
       })
       done++
       notes.push(`✅ تعليق اتنشر على ${payload.author ?? "?"} (${groupName.slice(0, 30)})`)
@@ -420,65 +432,11 @@ export async function processDueComments(wsId: string, max = 2): Promise<{ done:
   return { done, deferred, notes }
 }
 
-// ══════════ النصوص البشرية (مفيش قالب ثابت — تنويع كامل كل مرة) ══════════
+// ══════════ النصوص البشرية — بيتولدوا من وحدة علم النفس (أركان نفسية متغيرة) ══════════
 
-const OPENERS = [
-  "أهلاً يا فندم",
-  "بسم الله، أهلاً بيك",
-  "مساء الخير",
-  "صباح الخير",
-  "أهلاً وسهلاً",
-  "السلام عليكم",
-  "أهلاً",
-  "ربنا يوفقك",
-]
-
-const BRIDGES = [
-  "شفت طلبك في الجروب",
-  "مر عليا بوستك",
-  "لقيتك بتدور على",
-  "شايف إنك محتاج",
-  "وصلني طلبك",
-]
-
-const CLOSERS = [
-  "كلمني واتساب وأنا أظبطلك كل حاجة: https://wa.me/{WA}",
-  "ابعتلي واتساب دلوقتي وأنا معاك خطوة بخطوة: https://wa.me/{WA}",
-  "كلموني واتساب على {WANUM} وأنا هرد عليك فوراً: https://wa.me/{WA}",
-  "لو حابب تبص على شغلنا وتتكلم معانا، واتساب في الأسفل: https://wa.me/{WA}",
-  "عندي شغل مشابه عملناه قبل كده — كلمني واتساب: https://wa.me/{WA}",
-  "واتساب دايركت وأنا برد على طول: https://wa.me/{WA}",
-  "أو تكلمني تليجرام: https://t.me/+{TG} — ولو واتساب أسهل: https://wa.me/{WA}",
-]
-
-const SERVICE_PHRASE: Record<string, string> = {
-  "برمج": "شغل البرمجة",
-  "موقع": "الموقع الإلكتروني",
-  "تطبيق": "التطبيق",
-  "كاشير": "نظام الكاشير",
-  "تسويق": "التسويق",
-  "تصميم": "التصميم",
-  "متجر": "المتجر الإلكتروني",
-  "نظام": "النظام",
-}
-
-/** صياغة تعليق مختلف كل مرة: افتتاحية + جسر + مرجع الخدمة + ختام برابط عشوائي */
+/** صياغة تعليق نفسي بشري (توافقية مع الاختبارات القديمة) */
 export function buildHumanComment(postText: string, matched: string[]): string {
-  const opener = OPENERS[Math.floor(Math.random() * OPENERS.length)]
-  const bridge = BRIDGES[Math.floor(Math.random() * BRIDGES.length)]
-  const closer = CLOSERS[Math.floor(Math.random() * CLOSERS.length)]
-  const service = matched.find((m) => Object.keys(SERVICE_PHRASE).some((k) => m.includes(k)))
-  const servicePhrase = service ? Object.entries(SERVICE_PHRASE).find(([k]) => service.includes(k))?.[1] ?? "الخدمة" : "الخدمة"
-  // تعقيد النص: جملة مخصصة حسب طلب العميل
-  const core = ` ${bridge} بخصوص ${servicePhrase} — إحنا بنتعامل مع الشغلانة دي كل يوم وعندنا نماذج شغل متشابهة تقدر تبص عليها قبل أي كلام.`
-  const filled = closer
-    .replace("{WA}", RADAR_CONFIG.whatsapp)
-    .replace("{WANUM}", RADAR_CONFIG.whatsapp.replace(/^20/, "0"))
-    .replace("{TG}", RADAR_CONFIG.telegram)
-  // أقصر بس كامل الجملة — الجسر دايماً بياخد مفعول الجملة
-  const short = `${opener}، ${bridge} بخصوص ${servicePhrase}. ${filled}`
-  const long = `${opener}،${core} ${filled}`
-  return (Math.random() > 0.35 ? long : short).replace(/\s+/g, " ").trim()
+  return buildPsychComment(postText, matched).text
 }
 
 // ══════════ نشر التعليق عبر الستيلث ══════════
@@ -570,5 +528,10 @@ export async function radarCycle(wsId?: string): Promise<{ scanned: number; inst
   }
 
   const comments = await processDueComments(ws, 2)
+
+  // نبضة التطور الذاتي: تعلم من نتايج التعليقات (مقفولة جوه بمعدل 25 دقيقة + برومبت الإعدادات)
+  const cfg = zizoConfigOf((await db.workspace.findUnique({ where: { id: ws }, select: { settings: true } }))?.settings)
+  if (cfg.selfEvolution) await evolutionTick(ws).catch(() => undefined)
+
   return { scanned: groups.length, instant, leads, scheduled, commentNotes: comments.notes }
 }

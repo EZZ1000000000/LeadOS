@@ -76,6 +76,8 @@ model Workspace {
   sequences       Sequence[]
   experiments     AbExperiment[]
   platformAccounts PlatformAccount[]
+  tacticStats     TacticStat[]
+  evolutionProposals EvolutionProposal[]
 }
 
 model WorkspaceMember {
@@ -1211,6 +1213,48 @@ model AbExperiment {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, status])
+}
+
+/// إحصائيات التكتيكات النفسية — محرك التطور الذاتي بيتعلم أيها يكسب ويعيد الأوزان لوحده
+/// family: comment (تعليقات الرادار) | reply (ردود المحادثات) | opener (افتتاحيات المبادرات)
+model TacticStat {
+  id          String    @id @default(cuid())
+  workspaceId String
+  family      String // comment | reply | opener
+  tacticId    String // معرف التكتيك (مثل comment:curiosity_information_gap أو objection:price_investment_reframe)
+  used        Int       @default(0)
+  wins        Int       @default(0)
+  weight      Float     @default(1.0) // الوزن المحسوب — أعلى = اختيار أكتر
+  lastUsedAt  DateTime?
+  lastWinAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, family, tacticId])
+  @@index([workspaceId, family])
+}
+
+/// مقترح تطور جوهري — النظام ممنوع يطبقه من غير موافقة صاحب الوكالة (إشعار أولاً ثم تنفيذ بعد الموافقة)
+/// kind: STRATEGY | CAPACITY | IDENTITY | FEATURE | TEMPLATE_FAMILY
+model EvolutionProposal {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  title        String
+  kind         String
+  rationale    String // ليه النظام شايف إن ده يستاهل؟
+  plan         Json // خطة التطبيق اللي هتنفذ عند الموافقة ({ action: "config"|"noop", patch: {...} })
+  impact       String? // الأثر المتوقع بالأرقام/الكلام
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED | APPLIED
+  decisionNote String?
+  decidedAt    DateTime?
+  appliedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, createdAt])
 }
 
 /// حسابات المنصات المتعددة (طلب: تهيئة multi-account) — كل حساب = كوتية يومية إضافية

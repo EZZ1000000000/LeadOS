@@ -171,6 +171,9 @@ export interface ZizoConfig {
   maxDailyOutreach: number // سقف مبادرات/درافتات يومي (بشري)
   maxDailyMessages: number // سقف رسايل خروجة يوميًا لكل قناة (حماية الحظر)
   minGapMinutes: number // أقل فجوة بين رسالتين على نفس القناة (طابع بشري)
+  psychology: boolean // التدريب النفسي (سلوكي + بيعي + دوبامين) شغال في كل رد؟
+  selfEvolution: boolean // محرك التطور الذاتي بيتعلم ويعيد الأوزان تلقائيًا؟
+  defaultCommentAngle?: string // الركن النفسي الافتراضي لتعليقات الرادار (من مقترحات التطور المعتمدة)
 }
 
 export const ZIZO_DEFAULTS: Omit<ZizoConfig, "agencyName"> = {
@@ -182,6 +185,8 @@ export const ZIZO_DEFAULTS: Omit<ZizoConfig, "agencyName"> = {
   maxDailyOutreach: 6,
   maxDailyMessages: 30,
   minGapMinutes: 6,
+  psychology: true,
+  selfEvolution: true,
 }
 
 export function zizoConfigOf(wsSettings: unknown): ZizoConfig {

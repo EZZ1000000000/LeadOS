@@ -10,6 +10,8 @@ import { zizoPersona, HUMAN_RULES } from "./persona"
 import { SERVICES_DIGEST, servicesHint, zizoConfigOf } from "./services"
 import { humanize, type HumanOut } from "./humanize"
 import { stageLine, pickOpener, detectBooked, inferStage, STAGES, type SaleStage } from "./playbook"
+import { PSYCH_DOCTRINE, detectPsychContext } from "./psychology"
+import { recordTacticUse, evolutionTick } from "./evolution"
 import { gateCheck } from "./gate"
 
 const trunc = (s: unknown, n: number) => String(s ?? "").slice(0, n)
@@ -107,12 +109,27 @@ ${market}` : "",
     .join("\n\n")
 
   const stageGuide = stageLine(prevStage, conv.lastReplyBy, conv.lastMsgAt)
+
+  // التدريب النفسي: العقيدة دايماً + توجيه تكنيك-ب-تكنيك حسب رد العميل (أو حالة المتابعة)
+  const isFollowup = !lastClient
+  const psychHits = cfg.psychology ? detectPsychContext(lastClient, { followup: isFollowup }) : []
+  const tacticId = psychHits[0]?.id
+  const psychBlock = cfg.psychology
+    ? `\n\n${PSYCH_DOCTRINE}${
+        psychHits.length
+          ? `\n\nالوضع النفسي دلوقتي — استخدم التكنيك ده (رد العميل ده سلوك نفسي مش كلام عادي):\n${psychHits
+              .map((h) => `【${h.name}】\n${h.guidance}`)
+              .join("\n\n")}`
+          : ""
+      }`
+    : ""
+
   const system = `${zizoPersona({
     agencyName: cfg.agencyName,
     servicesDigest: SERVICES_DIGEST,
     memoryCtx,
     stageLine: stageGuide,
-  })}\n\n${HUMAN_RULES}`
+  })}\n\n${HUMAN_RULES}${psychBlock}`
   const user = `المحادثة لحد دلوقتي:
 ${chatTranscript(conv.messages) || "(لسه مفيش رسايل)"}
 
@@ -155,6 +172,9 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
   const out: HumanOut = humanize(draft.msgs ?? [])
   if (!out.msgs.length) return { ok: false, note: "الرد طلع فاضي بعد التصفية", msgs: [], delaysMs: [] }
 
+  // تسجيل التكتيك النفسي المستخدم — محرك التطور بيكريمه بعدين لو جاب نتيجة
+  if (tacticId) await recordTacticUse(wsId, "reply", tacticId)
+
   // المرحلة والموعد — لو زيزو ما صرّحش بيها استنتجناها من كلامه (دراع أمان)
   const declared = STAGES.includes(draft.stage as SaleStage) ? draft.stage : null
   const inferred = inferStage(out.msgs, prevStage)
@@ -193,13 +213,10 @@ ${conv.lang === "en" ? "العميل بيكتب إنجليزي — ردّ علي
         body: out.msgs[i],
         sentAt: new Date(sentAt.getTime() + i * 1000),
         deliverMs: out.delaysMs[i],
-        meta: ok
-          ? { sent: true, account }
-          : draft
-            ? { draft: true, pending: true }
-            : phone
-              ? { sent: false }
-              : { manual: true },
+        meta: {
+          ...(ok ? { sent: true, account } : draft ? { draft: true, pending: true } : phone ? { sent: false } : { manual: true }),
+          ...(tacticId ? { tactic: tacticId } : {}),
+        },
       },
     })
   }
@@ -424,7 +441,16 @@ export async function zizoTick(wsId: string): Promise<{ replies: number; followu
   }
 
   const parts = [replies && `${replies} رد`, followups && `${followups} متابعة`, outreaches && `${outreaches} مبادرة`].filter(Boolean)
-  return { replies, followups, outreaches, note: parts.length ? parts.join(" • ") : "مفيش شغل مطلوب دلوقتي" }
+
+  // نبضة التطور الذاتي: تعلم من النتايج + إعادة أوزان + مقترحات جوهرية (مقفولة جوه بمعدل زمني)
+  let evoNote = ""
+  if (cfg.selfEvolution) {
+    const evo = await evolutionTick(wsId).catch(() => null)
+    if (evo?.learned?.length) evoNote = ` • تطور: اتعلم ${evo.learned.length} درس`
+    if (evo?.proposal) evoNote += " • في مقترح مستني موافقتك"
+  }
+
+  return { replies, followups, outreaches, note: (parts.length ? parts.join(" • ") : "مفيش شغل مطلوب دلوقتي") + evoNote }
 }
 
 // ─── رسايل مستنية موافقة صاحب الوكالة (طبقة الموافقة) ───

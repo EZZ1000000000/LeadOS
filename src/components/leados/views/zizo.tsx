@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   MessagesSquare, RefreshCw, Send, CalendarCheck, Flame, Inbox, Sparkles,
-  PhoneCall, X, CheckCheck, MessageSquarePlus, ShieldCheck, Ban, PenLine,
+  PhoneCall, X, CheckCheck, MessageSquarePlus, ShieldCheck, Ban, PenLine, BrainCircuit, TrendingUp,
 } from "lucide-react"
 
 const STAGE_LABELS: Record<string, string> = {
@@ -56,9 +56,14 @@ interface StatusPayload {
   config: {
     agencyName: string; autoOutreach: boolean; minOutreachScore: number; maxDailyOutreach: number
     liveCallHours: string; requireApproval: boolean; autoFollowup: boolean
-    maxDailyMessages: number; minGapMinutes: number
+    maxDailyMessages: number; minGapMinutes: number; psychology: boolean; selfEvolution: boolean
   }
   services: Array<{ id: string; name: string; pitch: string }>
+  evolution: {
+    tactics: Array<{ family: string; tacticId: string; used: number; wins: number; winRate: number; weight: number }>
+    proposals: Array<{ id: string; title: string; kind: string; rationale: string; impact: string | null; status: string; decisionNote: string | null; createdAt: string }>
+    learnings: Array<{ pattern: string; note: string; weight: number }>
+  }
 }
 interface Msg {
   id: string; direction: string; author: string; body: string; sentAt: string; deliverMs: number | null
@@ -134,6 +139,11 @@ export function ZizoView() {
     reload()
   }
 
+  const decideProposal = async (proposalId: string, approve: boolean) => {
+    await apiSend("/api/agent/zizo", "POST", { action: "proposal", proposalId, approve })
+    reload()
+  }
+
   if (loading) return <LoadingBlock label="جارٍ إحضار محادثات زيزو..." />
   if (error) return <EmptyState title="تعذر تحميل حالة زيزو" hint={String(error)} />
   if (!data) return <EmptyState title="لا بيانات" />
@@ -187,7 +197,53 @@ export function ZizoView() {
         </div>
       )}
 
-      {/* إعدادات + أزرار */}
+      {/* قرارات التطور الجوهري — زيزو ممنوع يطبق حاجة كبيرة من غير إشارتك */}
+      {(() => {
+        const pendingProps = data.evolution?.proposals?.filter((p) => p.status === "PENDING") ?? []
+        if (!pendingProps.length) return null
+        return (
+          <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-3">
+            <div className="mb-2 flex items-center gap-2 text-sm font-bold text-violet-400">
+              <BrainCircuit className="h-4 w-4" />
+              تطور جوهري مستني قرارك ({pendingProps.length}) — زيزو مش بينفذ من غير موافقتك
+            </div>
+            <div className="space-y-2">
+              {pendingProps.map((p) => (
+                <div key={p.id} className="rounded-lg border border-border/60 bg-card/60 p-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge variant="outline" className="text-[10px] text-violet-300">{p.kind}</Badge>
+                    <span className="font-bold">{p.title}</span>
+                    <div className="flex-1" />
+                    <Button size="sm" className="h-7 text-xs" onClick={() => decideProposal(p.id, true)}>
+                      <CheckCheck className="ml-1 h-3 w-3" /> موافق — طبّق
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs text-rose-400" onClick={() => decideProposal(p.id, false)}>
+                      <Ban className="ml-1 h-3 w-3" /> ارفض
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{p.rationale}</p>
+                  {p.impact && <p className="mt-1 text-[11px] text-emerald-400/80">الأثر: {p.impact}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* تعلم زيزو الحي — الأركان النفسية بيتعيد ترتيبهم لوحده من النتايج */}
+      {data.evolution?.tactics?.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border/60 bg-card/40 p-2.5 text-[11px]">
+          <span className="ml-1 flex items-center gap-1 font-bold text-muted-foreground"><TrendingUp className="h-3.5 w-3.5" /> تطور زيزو:</span>
+          {data.evolution.tactics.slice(0, 7).map((t) => (
+            <Badge key={t.family + t.tacticId} variant="outline" className="text-[10px] font-normal">
+              {t.tacticId.split(":")[1] ?? t.tacticId} • {t.winRate}% ({t.wins}/{t.used})
+            </Badge>
+          ))}
+          {data.evolution.learnings?.length > 0 && (
+            <span className="text-muted-foreground">— آخر درس: {data.evolution.learnings[0].note.slice(0, 80)}</span>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/50 p-3 text-sm">
         <span className="text-muted-foreground">الوكالة:</span>
         <Input value={agencyName} onChange={(e) => setAgencyName(e.target.value)} className="h-8 w-40" placeholder="اسم وكالتك" />
@@ -199,6 +255,14 @@ export function ZizoView() {
         <Button size="sm" variant={s.config.requireApproval ? "default" : "outline"} className="h-8"
           onClick={() => saveConfig({ requireApproval: !s.config.requireApproval })}>
           موافقة قبل الإرسال: {s.config.requireApproval ? "مفعّلة" : "مقفولة"}
+        </Button>
+        <Button size="sm" variant={s.config.psychology ? "default" : "outline"} className="h-8"
+          onClick={() => saveConfig({ psychology: !s.config.psychology })}>
+          التدريب النفسي: {s.config.psychology ? "مدرّب ✅" : "مقفول"}
+        </Button>
+        <Button size="sm" variant={s.config.selfEvolution ? "default" : "outline"} className="h-8"
+          onClick={() => saveConfig({ selfEvolution: !s.config.selfEvolution })}>
+          التطور الذاتي: {s.config.selfEvolution ? "شغال ✅" : "واقف"}
         </Button>
         <Button size="sm" variant={s.config.autoFollowup ? "default" : "outline"} className="h-8"
           onClick={() => saveConfig({ autoFollowup: !s.config.autoFollowup })}>

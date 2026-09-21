@@ -5,6 +5,7 @@ import { db } from "@/lib/db"
 import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
 import { zizoReply, zizoTick, zizoOutreach, zizoStatus, openConversation, addClientMessage, pendingApprovals, approveDraft, rejectDraft } from "@/lib/agent/zizo/brain"
 import { zizoConfigOf, AGENCY_SERVICES } from "@/lib/agent/zizo/services"
+import { evolutionStats, decideProposal } from "@/lib/agent/zizo/evolution"
 
 export const maxDuration = 60
 
@@ -24,10 +25,15 @@ interface ZizoBody {
   autoOutreach?: boolean
   requireApproval?: boolean
   autoFollowup?: boolean
+  psychology?: boolean
+  selfEvolution?: boolean
   minOutreachScore?: number
   maxDailyOutreach?: number
   maxDailyMessages?: number
   minGapMinutes?: number
+  proposalId?: string
+  approve?: boolean
+  note?: string
 }
 
 export async function GET(req: Request) {
@@ -49,7 +55,8 @@ export async function GET(req: Request) {
   const status = await zizoStatus(wsId)
   const pending = await pendingApprovals(wsId)
   const ws = await db.workspace.findUnique({ where: { id: wsId }, select: { settings: true } })
-  return json({ ...status, pending, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })) })
+  const evo = await evolutionStats(wsId).catch(() => ({ tactics: [], proposals: [], learnings: [] }))
+  return json({ ...status, pending, config: zizoConfigOf(ws?.settings), services: AGENCY_SERVICES.map((s) => ({ id: s.id, name: s.name, pitch: s.pitch })), evolution: evo })
 }
 
 export async function POST(req: Request) {
@@ -117,6 +124,8 @@ export async function POST(req: Request) {
           ...(body.autoOutreach !== undefined ? { autoOutreach: Boolean(body.autoOutreach) } : {}),
           ...(body.requireApproval !== undefined ? { requireApproval: Boolean(body.requireApproval) } : {}),
           ...(body.autoFollowup !== undefined ? { autoFollowup: Boolean(body.autoFollowup) } : {}),
+          ...(body.psychology !== undefined ? { psychology: Boolean(body.psychology) } : {}),
+          ...(body.selfEvolution !== undefined ? { selfEvolution: Boolean(body.selfEvolution) } : {}),
           ...(body.maxDailyMessages !== undefined ? { maxDailyMessages: Math.max(1, Math.min(200, Number(body.maxDailyMessages) || 30)) } : {}),
           ...(body.minGapMinutes !== undefined ? { minGapMinutes: Math.max(1, Math.min(120, Number(body.minGapMinutes) || 6)) } : {}),
           ...(body.minOutreachScore !== undefined ? { minOutreachScore: Math.max(0, Math.min(100, Number(body.minOutreachScore) || 60)) } : {}),
@@ -125,6 +134,10 @@ export async function POST(req: Request) {
       }
       await db.workspace.update({ where: { id: wsId }, data: { settings: next as never } })
       return json({ ok: true, config: zizoConfigOf(next) })
+    }
+    if (action === "proposal") {
+      const r = await decideProposal(wsId, String(body.proposalId ?? ""), Boolean(body.approve), body.note ? String(body.note) : undefined)
+      return r.ok ? json(r) : jsonError(r.note, 400)
     }
     return jsonError("action غير معروف", 400)
   } catch (err) {
