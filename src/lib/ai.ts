@@ -1,13 +1,46 @@
-// LeadOS — AI Provider: NVIDIA NIM (المزود الوحيد للذكاء الاصطناعي)
+// LeadOS — AI Provider Router: dahl (أساسي) → NVIDIA NIM → z-ai (طوارئ)
 // راوتر مهام دقيق: كل مهمة ليها موديلها الأمثل + سلسلة بدائل تلقائية لو وقع/اتملى.
-// الكتالوج مبني على مسح حي كامل لكل موديلات الـAPI (82 موديل → 19 شغال فعليًا):
-//   scripts/nvidia-full-scan.py + scripts/nvidia-retry-timeouts.py
-// مجمع مفاتيح: NVIDIA_API_KEY + NVIDIA_API_KEY_2 (+ أي NVIDIA_API_KEY_N) — توزيع دائري
-// وتبديل فوري للمفتاح التالي عند الـrate-limit (429) أو إسقاط الميت (401/403).
+// مزود dahl (inference.dahl.global — متوافق OpenAI): GLM-5.3-Flash + DeepSeek-V4-Flash + MiniMax-M2.7
+//   الكتالوج مبني على قياس حي: scripts/bench-dahl.ts (JSON/صياغة/عربي مصري)
+//   MiniMax بيرجع <think> في المحتوى → بيتنضف قبل الرجوع، وGLM بيضرب model_concurrency ساعات الذروة → تبريد تلقائي.
+// كتالوج NVIDIA مبني على مسح حي كامل (82 موديل → 19 شغال): scripts/nvidia-full-scan.py
+// مجمعات مفاتيح: DAHL_API_KEY(_N) و NVIDIA_API_KEY(_N) — توزيع دائري وتبديل فوري عند 429/401/403.
 // كل نداء بيتسجل في AiRun للمراقبة (doc §64).
 import { db } from "@/lib/db"
 
 const NIM_BASE = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/$/, "")
+
+// ─── مزود dahl (أساسي — OpenAI-compatible) ───
+const DAHL_BASE = (process.env.DAHL_BASE_URL || "https://inference.dahl.global/v1").replace(/\/$/, "")
+const DAHL_KEY_POOL: string[] = Object.entries(process.env)
+  .filter(([k, v]) => /^DAHL_API_KEY(_\d+)?$/.test(k) && v && v.trim().length > 20)
+  .map(([, v]) => (v as string).trim())
+
+// تبريد مودلات dahl نفس منطق NVIDIA (المؤشر منفصل عشان الأسماء مختلفة)
+const dahlCooldownUntil = new Map<string, number>()
+function noteDahlFailure(model: string, status: number): void {
+  const ms = status === 429 ? 60_000 : status === 404 || status >= 500 ? 600_000 : 15_000
+  dahlCooldownUntil.set(model, Date.now() + ms)
+}
+
+function dahlModelsLive(chain: string[]): string[] {
+  const now = Date.now()
+  const live = chain.filter((m) => (dahlCooldownUntil.get(m) ?? 0) <= now)
+  return live.length ? live : [chain[0]]
+}
+
+/** تنظيف بلوكات التفكير <think>...</think> اللي بترجع مدمجة في المحتوى (MiniMax/DeepSeek) */
+function stripThink(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/i, "")
+    .trim()
+}
+
+/** هل الرسايل فيها أجزاء صور؟ (مودلات dahl نصية فقط) */
+function hasImageParts(messages: AiMessage[]): boolean {
+  return messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"))
+}
 
 // ─── مجمع المفاتيح: تبديل تلقائي عند الـrate-limit ───
 // • توزيع دائري: النداءات بالتبادل على المفاتيح عشان الحمل يتوزع والحصص تكتمل أبطأ
@@ -129,6 +162,29 @@ export interface CatalogEntry {
   kind: "general" | "reasoning" | "vision" | "creative" | "code" | "translate" | "safety" | "parse" | "embed" | "experimental"
   latency: string
   tasks: string[]
+}
+
+// ─── كتالوج dahl الحي (قياس حي: scripts/bench-dahl.ts) ───
+export const DAHL_CATALOG: CatalogEntry[] = [
+  { id: "deepseek-ai/DeepSeek-V4-Flash-0731", role: "المحرك الأساسي — عربي مصري طبيعي + استدلال عميق", kind: "reasoning", latency: "سريع (1.7s صياغة / 6.5s JSON)", tasks: ["compose", "research", "reason", "qualify", "agent", "code", "chat"] },
+  { id: "MiniMaxAI/MiniMax-M2.7", role: "بطل التصنيف — JSON سريع 2s + تلخيص", kind: "parse", latency: "سريع (2s JSON / 18s صياغة)", tasks: ["classify", "summarize", "creative", "translate", "moderate"] },
+  { id: "zai-org/GLM-5.3-Flash", role: "احتياط محادثة — مزدحم ساعات الذروة (model_concurrency → تبريد دقيقة)", kind: "general", latency: "متغير حسب الحمولة", tasks: ["chat"] },
+]
+
+// سلاسل dahl — الأفضل المقاس أولًا (vision: مفيش — المودلات نصية فقط)
+const DAHL_TASK_CHAINS: Partial<Record<AiTask, string[]>> = {
+  classify: ["MiniMaxAI/MiniMax-M2.7", "deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3-Flash"],
+  qualify: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  chat: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7", "zai-org/GLM-5.3-Flash"],
+  agent: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  compose: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  creative: ["MiniMaxAI/MiniMax-M2.7", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+  research: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  reason: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  translate: ["MiniMaxAI/MiniMax-M2.7", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+  summarize: ["MiniMaxAI/MiniMax-M2.7", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+  code: ["deepseek-ai/DeepSeek-V4-Flash-0731", "MiniMaxAI/MiniMax-M2.7"],
+  moderate: ["MiniMaxAI/MiniMax-M2.7", "deepseek-ai/DeepSeek-V4-Flash-0731"],
 }
 
 export const NVIDIA_CATALOG: CatalogEntry[] = [
@@ -262,6 +318,52 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
   }
 }
 
+async function callDahl(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<CallOutcome> {
+  const started = Date.now()
+  try {
+    const res = await fetch(`${DAHL_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${DAHL_KEY_POOL[0]}` },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: opts.temperature ?? (task === "classify" || task === "moderate" ? 0.1 : 0.2),
+        max_tokens: opts.maxTokens ?? TASK_MAX_TOKENS[task],
+      }),
+      signal: AbortSignal.timeout(TASK_TIMEOUT_MS[task]),
+    })
+    if (!res.ok) {
+      // dahl بيرجع {"error":{"code":"model_concurrency"}} بنفس معنى 429 — التبريد الموحد بيكفي
+      noteDahlFailure(model, res.status)
+      return { ok: false, status: res.status }
+    }
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }
+    const choice = data.choices?.[0]
+    const text = stripThink(choice?.message?.content ?? "")
+    // مودلات التفكير لو التوكنز خلصت وقت التفكير بترجع فاضية → برّد الموديل وجرب التالي
+    if (!text) {
+      noteDahlFailure(model, choice?.finish_reason === "length" ? 429 : 500)
+      return { ok: false, status: 500 }
+    }
+    const result: AiResult = {
+      text,
+      provider: "DAHL",
+      model,
+      latencyMs: Date.now() - started,
+      task,
+      inputTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
+    }
+    return { ok: true, result }
+  } catch {
+    noteDahlFailure(model, 0)
+    return { ok: false, status: 0 }
+  }
+}
+
 async function logRun(result: AiResult, opts: AiCallOptions, success: boolean, error?: string): Promise<void> {
   if (!opts.workspaceId) return
   try {
@@ -291,7 +393,22 @@ export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): P
   const task: AiTask = opts.task ?? "chat"
   let result: AiResult | null = null
 
-  if (KEY_POOL.length) {
+  // الطبقة 1: dahl (المزود الأساسي — مفتاح المستخدم) — بيتجنب لو الرسايل فيها صور
+  if (DAHL_KEY_POOL.length && !hasImageParts(messages)) {
+    const chain = DAHL_TASK_CHAINS[task] ?? []
+    for (const model of dahlModelsLive(chain)) {
+      const out = await callDahl(model, messages, opts, task)
+      if (out.ok) {
+        result = out.result
+        break
+      }
+      // فشل/موديل مضغوط (429 model_concurrency) → الموديل التالي في السلسلة فورًا
+      continue
+    }
+  }
+
+  // الطبقة 2: NVIDIA NIM (لو فيه مفاتيح)
+  if (!result && KEY_POOL.length) {
     outer: for (const model of modelsLive(chainFor(task))) {
       const keys = pickKeys()
       let rateLimitedAll = true
@@ -311,7 +428,7 @@ export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): P
     }
   }
 
-  // Fallback: محرك z-ai (شغال بدون مفتاح — بيضمن زيزو مش بيصمت أبداً)
+  // الطبقة 3: محرك z-ai (شغال بدون مفتاح — بيضمن زيزو مش بيصمت أبداً)
   if (!result) result = await zaiChat(messages, task)
 
   if (result) void logRun(result, opts, true)
@@ -516,13 +633,23 @@ export function aiProviderStatus() {
       main: chainFor("chat"),
       reason: chainFor("reason"),
     },
-    // الجدول الكامل
+    // الجدول الكامل (dahl أساسي → NVIDIA بدائل)
     tasks,
-    catalog: NVIDIA_CATALOG,
+    catalog: [...DAHL_CATALOG, ...NVIDIA_CATALOG],
+    dahl: {
+      active: DAHL_KEY_POOL.length > 0,
+      keys: DAHL_KEY_POOL.length,
+      base: DAHL_BASE,
+      models: DAHL_CATALOG.map((m) => m.id),
+      chains: DAHL_TASK_CHAINS,
+      cooling: [...dahlCooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
+    },
     taskLabels: AI_TASK_LABELS,
     cooling: [...cooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
-    note: hasKey
-      ? `NVIDIA NIM (مودلات مجانية) — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي + مجمع مفاتيح (${pool.live}/${pool.total} حي) بتبديل تلقائي عند الـrate-limit`
-      : "أضف NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
+    note: DAHL_KEY_POOL.length
+      ? `dahl (أساسي) — DeepSeek-V4-Flash + MiniMax-M2.7 + GLM-5.3-Flash على 12 مهمة بتبديل تلقائي عند الضغط${hasKey ? ` + NVIDIA NIM بدائل (${pool.live}/${pool.total} مفتاح حي)` : ""} + z-ai طوارئ`
+      : hasKey
+        ? `NVIDIA NIM — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي + مجمع مفاتيح (${pool.live}/${pool.total} حي)`
+        : "أضف DAHL_API_KEY أو NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
   }
 }

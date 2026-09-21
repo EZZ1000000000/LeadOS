@@ -413,6 +413,8 @@ async function searchZai(query: string, limit: number, recencyDays: number): Pro
       // استعلام من غير نتايج مش خطأ — رجّع فاضي عشان السلسلة تكمل
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes("422") || msg.toLowerCase().includes("no search results")) return []
+      // 429 → مفيش لازمة إعادة محاولة — التبريد العام بيتكفل (إعادة المحاولة بتحرق الكوتة المتعافية)
+      if (msg.includes("429") || msg.toLowerCase().includes("too many requests")) break
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error("zai failed")
@@ -454,7 +456,17 @@ const PROVIDER_ORDER: Array<{ name: SearchProvider; run: (q: string, l: number, 
   { name: "zai", run: searchZai },
 ]
 
+// ─── تبريد بحث عام: لما ز-ai يضرب 429 بنستنى بدل ما نحرق محاولات المهام ───
+// 429 → دقيقتين سكتة على مستوى النظام كله (مفيش نداءات بحث خالص)
+// اللي بيلمح التبريد بيرجع نتيجة فاضية فورًا — والتابعة في الطابور بتتقفل بـ"مؤجلة بسبب التبريد"
+let searchCooldownUntil = 0
+export function searchCooldownRemaining(): number {
+  return Math.max(0, searchCooldownUntil - Date.now())
+}
+
 async function rawWebSearch(query: string, limit: number, recencyDays: number): Promise<{ results: WebSearchResult[]; provider: SearchProvider | "none" }> {
+  // التبريد النشط → صفر نداءات (بندّخر الكوتة المتعافية للتابعة القادمة)
+  if (searchCooldownRemaining() > 0) return { results: [], provider: "none" }
   const chain = preferredProvider
     ? [PROVIDER_ORDER.find((p) => p.name === preferredProvider)!, ...PROVIDER_ORDER.filter((p) => p.name !== preferredProvider)]
     : PROVIDER_ORDER
@@ -464,7 +476,13 @@ async function rawWebSearch(query: string, limit: number, recencyDays: number): 
       preferredProvider = provider.name
       return { results, provider: provider.name }
     } catch (err) {
-      console.warn(`[discovery] provider ${provider.name} failed: "${query.slice(0, 50)}" — ${err instanceof Error ? err.message.slice(0, 100) : err}`)
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[discovery] provider ${provider.name} failed: "${query.slice(0, 50)}" — ${msg.slice(0, 100)}`)
+      // 429 من المزود الأخير (ز-ai عادةً) → تبريد عام دقيقتين
+      if (msg.includes("429") || msg.toLowerCase().includes("too many requests")) {
+        searchCooldownUntil = Date.now() + 120_000
+        console.warn("[discovery] rate-limit عام — تبريد بحث دقيقتين عشان الكوتة تتعافى")
+      }
     }
   }
   console.warn(`[discovery] كل المزودين فشلوا: "${query.slice(0, 60)}"`)
