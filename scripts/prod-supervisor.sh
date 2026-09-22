@@ -5,19 +5,19 @@
 cd /home/z/my-project || exit 1
 mkdir -p db/backups logs
 
-# تحميل متغيرات البيئة المخصصة
-set -a
-source .env.local 2>/dev/null
-set +a
-export DATABASE_URL="file:/home/z/my-project/db/custom.db"
-export NODE_ENV=production
-export HOSTNAME=0.0.0.0
-export PORT=3000
-
 log() { echo "$(date '+%H:%M:%S') $1" >> logs/supervisor.log; }
 log "═══ المشرف بدأ ═══"
 
 while true; do
+  # ─── 0) تحميل البيئة في كل دورة — أي تحديث مفاتيح بيتفعل مع أول إعادة تشغيل ───
+  set -a
+  source .env.local 2>/dev/null
+  set +a
+  export DATABASE_URL="file:/home/z/my-project/db/custom.db"
+  export NODE_ENV=production
+  export HOSTNAME=0.0.0.0
+  export PORT=3000
+
   # ─── 1) خادم الإنتاج: استجابة فعلية مش مجرد عملية ───
   code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:3000/ 2>/dev/null)
   if [ "$code" != "200" ]; then
