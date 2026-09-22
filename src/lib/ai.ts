@@ -23,6 +23,40 @@ function noteDahlFailure(model: string, status: number): void {
   dahlCooldownUntil.set(model, Date.now() + ms)
 }
 
+// ─── مجمع مفاتيح dahl: توزيع دائري + تبديل تلقائي عند الضغط ───
+// • النداءات بالتبادل على المفاتيح عشان الحمل يتوزع (11 مفتاح = سعة أكبر بكتير)
+// • 429 (موديل مضغوط/مفتاح مضغوط) → المفتاح التالي على نفس الموديل فورًا
+// • 401/403 → المفتاح ميت ويُشال من التداول نهائيًا
+const dahlKeyCooldownUntil = new Map<string, number>()
+const deadDahlKeys = new Set<string>()
+let dahlKeyCursor = 0
+
+function noteDahlKeyFailure(key: string, status: number): void {
+  if (status === 401 || status === 403) deadDahlKeys.add(key)
+  else if (status === 429) dahlKeyCooldownUntil.set(key, Date.now() + 60_000)
+}
+
+function pickDahlKeys(): string[] {
+  const now = Date.now()
+  const alive = DAHL_KEY_POOL.filter((k) => !deadDahlKeys.has(k))
+  const live = alive.filter((k) => (dahlKeyCooldownUntil.get(k) ?? 0) <= now)
+  const pool = live.length ? live : alive.slice(0, 1)
+  if (!pool.length) return []
+  dahlKeyCursor = (dahlKeyCursor + 1) % pool.length
+  return [...pool.slice(dahlKeyCursor), ...pool.slice(0, dahlKeyCursor)]
+}
+
+/** حالة مجمع مفاتيح dahl للمراقبة */
+export function dahlKeyPoolStatus() {
+  const now = Date.now()
+  return {
+    total: DAHL_KEY_POOL.length,
+    live: DAHL_KEY_POOL.filter((k) => !deadDahlKeys.has(k) && (dahlKeyCooldownUntil.get(k) ?? 0) <= now).length,
+    dead: deadDahlKeys.size,
+    cooling: [...dahlKeyCooldownUntil.values()].filter((t) => t > now).length,
+  }
+}
+
 function dahlModelsLive(chain: string[]): string[] {
   const now = Date.now()
   const live = chain.filter((m) => (dahlCooldownUntil.get(m) ?? 0) <= now)
@@ -232,7 +266,7 @@ const EMBED_CHAIN = ["nvidia/nemotron-3-embed-1b", "nvidia/llama-nemotron-embed-
 // مهلة ومخرجات افتراضية لكل مهمة (مضبوطة على قياسات المسح الحي)
 const TASK_TIMEOUT_MS: Record<AiTask, number> = {
   classify: 45_000, qualify: 60_000, chat: 60_000, agent: 90_000,
-  compose: 60_000, creative: 120_000, research: 150_000, reason: 150_000,
+  compose: 90_000, creative: 120_000, research: 150_000, reason: 150_000,
   vision: 120_000, translate: 30_000, summarize: 60_000, code: 120_000,
   moderate: 25_000,
 }
@@ -318,23 +352,25 @@ async function callNvidia(model: string, messages: AiMessage[], opts: AiCallOpti
   }
 }
 
-async function callDahl(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<CallOutcome> {
+async function callDahl(model: string, messages: AiMessage[], opts: AiCallOptions, task: AiTask, key: string): Promise<CallOutcome> {
   const started = Date.now()
   try {
     const res = await fetch(`${DAHL_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${DAHL_KEY_POOL[0]}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model,
         messages,
         temperature: opts.temperature ?? (task === "classify" || task === "moderate" ? 0.1 : 0.2),
-        max_tokens: opts.maxTokens ?? TASK_MAX_TOKENS[task],
+        // مودلات dahl تفكيرية (<think> بياكل من الميزانية) — حد أدنى 1000 توكن يضمن نزول الرد
+        max_tokens: Math.max(opts.maxTokens ?? TASK_MAX_TOKENS[task], 1000),
       }),
       signal: AbortSignal.timeout(TASK_TIMEOUT_MS[task]),
     })
     if (!res.ok) {
       // dahl بيرجع {"error":{"code":"model_concurrency"}} بنفس معنى 429 — التبريد الموحد بيكفي
-      noteDahlFailure(model, res.status)
+      if (res.status !== 429) noteDahlFailure(model, res.status)
+      noteDahlKeyFailure(key, res.status)
       return { ok: false, status: res.status }
     }
     const data = (await res.json()) as {
@@ -389,22 +425,31 @@ async function logRun(result: AiResult, opts: AiCallOptions, success: boolean, e
   }
 }
 
+/** سلسلة dahl كاملة: موديل → مفاتيح → أول نجاح أو null
+ * بدون لابل (مفكك SWC بيحوّل اللوب المليبل لبلوك وcontinue على بلوك بيتكسر) */
+async function callDahlChain(chain: string[], messages: AiMessage[], opts: AiCallOptions, task: AiTask): Promise<AiResult | null> {
+  for (const model of dahlModelsLive(chain)) {
+    const keys = pickDahlKeys()
+    for (const key of keys) {
+      const out = await callDahl(model, messages, opts, task, key)
+      if (out.ok) return out.result
+      if (out.status === 401 || out.status === 403) continue // مفتاح ميت → المفتاح التالي
+      // سعة الموديل نفسه مضغوطة (model_concurrency) أو خطأ شبكة/موديل
+      // → برّد الموديل عند 429 وانتقل للموديل التالي (المفاتيح تفضل حية للباقي)
+      if (out.status === 429) noteDahlFailure(model, 429)
+      break
+    }
+  }
+  return null
+}
+
 export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): Promise<AiResult | null> {
   const task: AiTask = opts.task ?? "chat"
   let result: AiResult | null = null
 
-  // الطبقة 1: dahl (المزود الأساسي — مفتاح المستخدم) — بيتجنب لو الرسايل فيها صور
+  // الطبقة 1: dahl (المزود الأساسي — مجمع مفاتيح المستخدم) — بيتجنب لو الرسايل فيها صور
   if (DAHL_KEY_POOL.length && !hasImageParts(messages)) {
-    const chain = DAHL_TASK_CHAINS[task] ?? []
-    for (const model of dahlModelsLive(chain)) {
-      const out = await callDahl(model, messages, opts, task)
-      if (out.ok) {
-        result = out.result
-        break
-      }
-      // فشل/موديل مضغوط (429 model_concurrency) → الموديل التالي في السلسلة فورًا
-      continue
-    }
+    result = await callDahlChain(DAHL_TASK_CHAINS[task] ?? [], messages, opts, task)
   }
 
   // الطبقة 2: NVIDIA NIM (لو فيه مفاتيح)
@@ -638,7 +683,7 @@ export function aiProviderStatus() {
     catalog: [...DAHL_CATALOG, ...NVIDIA_CATALOG],
     dahl: {
       active: DAHL_KEY_POOL.length > 0,
-      keys: DAHL_KEY_POOL.length,
+      keys: dahlKeyPoolStatus(),
       base: DAHL_BASE,
       models: DAHL_CATALOG.map((m) => m.id),
       chains: DAHL_TASK_CHAINS,
@@ -647,7 +692,7 @@ export function aiProviderStatus() {
     taskLabels: AI_TASK_LABELS,
     cooling: [...cooldownUntil.entries()].filter(([, t]) => t > Date.now()).length,
     note: DAHL_KEY_POOL.length
-      ? `dahl (أساسي) — DeepSeek-V4-Flash + MiniMax-M2.7 + GLM-5.3-Flash على 12 مهمة بتبديل تلقائي عند الضغط${hasKey ? ` + NVIDIA NIM بدائل (${pool.live}/${pool.total} مفتاح حي)` : ""} + z-ai طوارئ`
+      ? `dahl (أساسي) — DeepSeek-V4-Flash + MiniMax-M2.7 + GLM-5.3-Flash على 12 مهمة + مجمع مفاتيح (${dahlKeyPoolStatus().live}/${dahlKeyPoolStatus().total} حي) بتبديل تلقائي عند الضغط${hasKey ? ` + NVIDIA NIM بدائل (${pool.live}/${pool.total} مفتاح حي)` : ""} + z-ai طوارئ`
       : hasKey
         ? `NVIDIA NIM — راوتر مهام دقيق: 19 موديل حي موزعين على 13 مهمة + إيمبدنج دلالي + مجمع مفاتيح (${pool.live}/${pool.total} حي)`
         : "أضف DAHL_API_KEY أو NVIDIA_API_KEY في متغيرات البيئة — بدون مفتاح النظام يستخدم المحرك الاستدلالي للكلمات المفتاحية",
