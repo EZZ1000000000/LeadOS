@@ -1,0 +1,46 @@
+# LeadOS — تشغيل إنتاجي على أي سيرفر بأمر واحد
+# القاعدة الدائمة في ./db (volume) — الـreset مش موجود في المفرداس دي
+# إضافي: caddy بروكسي مع HTTPS تلقائي لو ظبطت الدومين
+services:
+  leados:
+    build: .
+    container_name: leados
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/db/custom.db
+    volumes:
+      - ./db:/app/db                      # ⭐ القاعدة الدائمة — أهم سطر في الملف
+      - ./logs:/app/logs                  # لوجات المراقبة (8h-monitor وغيره)
+      - ./backups:/app/backups-external   # الباك أب الخارجي جوا الحاوية
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # بروكسي عكسي + HTTPS تلقائي (عدّل Caddyfile.deploy بحط دومينك)
+  caddy:
+    image: caddy:2-alpine
+    container_name: leados-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.deploy:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - leados
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+db/*.db
+db/backups/*.db
+backups
+logs/*.log
+logs/.8h-err-line
+download
+upload
+tool-results
+*.log
+.env.local
+.env
+README.md
+docs

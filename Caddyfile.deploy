@@ -1,0 +1,11 @@
+# LeadOS — بروكسي عكسي مع HTTPS تلقائي
+# استبدل leados.example.com بدومينك الفعلي، وبعدها Caddy بياخد شهادة SSL تلقائياً من Let's Encrypt
+# لو مش هتدومين دلوقتي: خلي السطر الأول ":80" بس
+leados.example.com {
+	reverse_proxy leados:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}
