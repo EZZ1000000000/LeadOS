@@ -78,12 +78,12 @@ function spawnSidecar(): boolean {
     log(`script غير موجود: ${script}`)
     return false
   }
-  const candidates = [process.env.CAMOUFOX_PYTHON, "/home/z/.venv/bin/python3", "python3"].filter(
+  const candidates = [process.env.CAMOUFOX_PYTHON, "python3", "python", "/home/z/.venv/bin/python3"].filter(
     Boolean,
   ) as string[]
   for (const py of candidates) {
     try {
-      const out = openSync("/tmp/camoufox.log", "a")
+      const out = openSync(path.join(process.env.TEMP || "/tmp", "camoufox.log"), "a")
       const child = spawn(py, [script], { detached: true, stdio: ["ignore", out, out], env: process.env })
       child.unref()
       log(`تم الإطلاق عبر ${py} (pid ${child.pid})`)
