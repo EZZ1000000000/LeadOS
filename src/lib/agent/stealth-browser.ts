@@ -3,9 +3,9 @@
 // - لو الخدمة مش شغالة: بيحاول يشغّلها تلقائيًا (تطوير/سيرفر ذاتي فقط — مش على Vercel).
 // - لو فشل كل شيء: يرجع نتيجة واضحة graceful بدون ما يكسر أي مسار.
 // على Vercel: اضبط CAMOUFOX_URL على خادم خارجي يشغّل الخدمة (Docker/VPS).
-import { spawn } from "node:child_process"
-import { appendFileSync, existsSync, openSync } from "node:fs"
-import path from "node:path"
+import { spawn } from "child_process"
+import { appendFileSync, existsSync, openSync } from "fs"
+import path from "path"
 
 const BASE = (process.env.CAMOUFOX_URL || "http://127.0.0.1:9797").replace(/\/$/, "")
 const TOKEN = process.env.CAMOUFOX_TOKEN

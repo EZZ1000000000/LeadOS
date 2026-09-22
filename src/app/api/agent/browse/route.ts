@@ -46,8 +46,8 @@ export async function POST(req: Request) {
       let screenshotPath: string | undefined
       if (nav.ok && nav.screenshot && body.save) {
         try {
-          const { mkdir, writeFile } = await import("node:fs/promises")
-          const path = await import("node:path")
+          const { mkdir, writeFile } = await import("fs/promises")
+          const path = await import("path")
           const dir = path.join(process.cwd(), "download", "stealth")
           await mkdir(dir, { recursive: true })
           screenshotPath = `${dir}/shot-${Date.now()}.png`

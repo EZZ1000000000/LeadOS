@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  /* جذر Turbopack مثبّت صراحة — بدونه لو فيه lockfile في مجلد أعلى (زي مجلد المستخدم
+     على ويندوز) بيختار جذر غلط ويبوّظ مسارات الـstandalone ويبوّظ البناء */
+  turbopack: {
+    root: path.resolve(),
+  },
   /* config options here */
   typescript: {
     ignoreBuildErrors: true,

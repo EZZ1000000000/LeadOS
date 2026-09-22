@@ -51,6 +51,51 @@ function run(cmd, opts) {
   execSync(cmd, Object.assign({ cwd: ROOT, stdio: 'inherit' }, opts || {}));
 }
 
+/* npm 12+ بيقفل سكربتات ما-after-التنصيب افتراضياً — بنشغل المهم منها يدوياً */
+function fixBlockedPostinstalls() {
+  const critical = [
+    '@prisma/engines/scripts/postinstall.js',  // بينزّل محركات Prisma (ضروري!)
+    '@prisma/client/scripts/postinstall.js',   // بيربط الكلينت
+    'sharp/install/check.js',                  // بيتأكد من باينري sharp
+  ];
+  for (const rel of critical) {
+    const f = path.join(ROOT, 'node_modules', rel);
+    if (!fs.existsSync(f)) { console.log('   (مش موجود، تخطي: ' + rel + ')'); continue; }
+    console.log('   > node ' + rel);
+    try { execSync(`node "${f}"`, { cwd: ROOT, stdio: 'pipe' }); }
+    catch (_) { console.log('   (تحذير متجاهل: ' + rel + ')'); }
+  }
+}
+
+/* نتأكد إن محرك قاعدة البيانات موجود فعلاً — لو مش موجود بنصلحه مرة تانية */
+function findQueryEngine() {
+  const dirs = [
+    path.join(ROOT, 'node_modules', '.prisma', 'client'),
+    path.join(ROOT, 'node_modules', '@prisma', 'client'),
+    path.join(ROOT, 'node_modules', '@prisma', 'engines'),
+  ];
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith('.node') && /engine/i.test(f)) return path.join(dir, f);
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+function ensureQueryEngine() {
+  let engine = findQueryEngine();
+  if (engine) { ok('محرك قاعدة البيانات موجود ✅ (' + path.basename(engine) + ')'); return; }
+  warn('محرك Prisma مش ظاهر — جاري إصلاحه...');
+  try { execSync(`node "${path.join(ROOT, 'node_modules', '@prisma', 'engines', 'scripts', 'postinstall.js')}"`, { cwd: ROOT, stdio: 'pipe' }); } catch (_) {}
+  try { run('npx prisma generate'); } catch (_) {}
+  engine = findQueryEngine();
+  if (!engine) fail('محرك قاعدة البيانات ناقص — امسح مجلد node_modules وشغّل install.bat تاني');
+  ok('محرك قاعدة البيانات اتحط بعد الإصلاح: ' + path.basename(engine));
+}
+
 function loadEnvFile() {
   const env = {};
   const f = path.join(ROOT, '.env.local');
@@ -90,15 +135,19 @@ function main() {
   else warn('db/custom.db مش موجودة — هتتعمل فاضية في الخطوة الجاية');
 
   /* 2) المكتبات */
-  step(2, 'تحميل المكتبات (npm install) — أول مرة ممكن ياخد 3-5 دقايق');
+  step(2, 'تحميل المكتبات (npm install) — أول مرة ممكن ياخد 3-15 دقيقة حسب النت');
   run('npm install --no-audit --no-fund');
   ok('المكتبات اتثبتت');
+  step('2+', 'إصلاح سكربتات الحزم اللي npm 12 بيمنعها (Prisma + sharp)');
+  fixBlockedPostinstalls();
+  ok('الإصلاح خلص');
 
   /* 3) Prisma */
   step(3, 'تجهيز قاعدة البيانات (Prisma)');
   const env = loadEnvFile();
   const dbUrl = 'file:' + dbPath.split(path.sep).join('/');
   run('npx prisma generate');
+  ensureQueryEngine();
   if (!hasDb) {
     console.log('   القاعدة مش موجودة — هتتعمل من السكيما (فاضية)...');
     run('npx prisma db push', { env: Object.assign({}, process.env, env, { DATABASE_URL: dbUrl }) });

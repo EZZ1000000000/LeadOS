@@ -271,8 +271,8 @@ export const AGENT_TOOLS: AgentTool[] = [
         ])
       }
       const csv = "\uFEFF" + rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n")
-      const { mkdir, writeFile } = await import("node:fs/promises")
-      const path = await import("node:path")
+      const { mkdir, writeFile } = await import("fs/promises")
+      const path = await import("path")
       const dir = process.env.EXPORT_DIR ?? path.join(process.cwd(), "download")
       await mkdir(dir, { recursive: true }).catch(() => undefined)
       const filename = `leados-export-${new Date().toISOString().slice(0, 10)}-${Date.now() % 100000}.csv`
@@ -328,8 +328,8 @@ export const AGENT_TOOLS: AgentTool[] = [
         let savedShot: string | undefined
         if (nav.screenshot) {
           try {
-            const { mkdir, writeFile } = await import("node:fs/promises")
-            const path = await import("node:path")
+            const { mkdir, writeFile } = await import("fs/promises")
+            const path = await import("path")
             const dir = path.join(process.cwd(), "download", "stealth")
             await mkdir(dir, { recursive: true })
             const filename = `shot-${Date.now()}.png`
