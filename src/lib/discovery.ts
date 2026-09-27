@@ -1038,8 +1038,10 @@ export async function runDiscovery(
         } else if (PLATFORM_SITES[st]) {
           // المنصة بتاخد استعلامات بلغتها هي — مش استعلام القاعدة العام
           // (السبب: «كافيهات مدينة نصر» على wuzzuf/OLX/Quora = صفر نتايج = 9 منصات ميتة)
+          // التناوب: (جولة + ترتيب المنصة) % عدد الاستعلامات — المسح الشامل (جولة واحدة)
+          // بيوزع الشكّل والبذور المضمونة على المنصات بالتناوب، فكل منصة بتاخد حصة حية
           const qs = platformQueries(st, q)
-          const qq = qs[pass % qs.length]
+          const qq = qs[(pass + types.indexOf(st)) % qs.length]
           batch = await platformAdapter(st, qq, limitPerQuery, RECENT)
           if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
         } else if (st === "NEWS") {
