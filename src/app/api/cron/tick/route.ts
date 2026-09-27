@@ -31,11 +31,14 @@ async function handle(req: Request) {
   if (!authorized) return jsonError("غير مصرح", 401)
 
   const maxJobs = Math.min(10, Number(url.searchParams.get("max") ?? 5))
+  // المسح الشامل (؟full=1): جوبة اكتشاف لكل ورشة على الـ16 منصة كلهم دفعة واحدة
+  // — لبذر فوري لكل المصادر. الاستخدام العادي (الكرن) من غيره — الدوران بالساعة كفاية
+  const fullSweep = ["1", "true", "yes"].includes((url.searchParams.get("full") ?? "").toLowerCase())
 
   after(async () => {
     let result: Awaited<ReturnType<typeof processTick>>
     try {
-      result = await processTick(maxJobs)
+      result = await processTick(maxJobs, { fullSweep })
     } catch (err) {
       console.error("[tick] processTick crashed:", err instanceof Error ? err.stack : err)
       return
@@ -86,7 +89,7 @@ async function handle(req: Request) {
     console.log(`[tick] ${JSON.stringify({ at: new Date().toISOString(), ...result, groupScan, zizo })}`)
   })
 
-  return json({ ok: true, at: new Date().toISOString(), async: true, maxJobs })
+  return json({ ok: true, at: new Date().toISOString(), async: true, maxJobs, full: fullSweep || undefined })
 }
 
 export async function GET(req: Request) {

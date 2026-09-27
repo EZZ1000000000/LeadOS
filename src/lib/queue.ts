@@ -53,6 +53,7 @@ interface DiscoveryPayload {
   sourceId?: string
   query?: string
   sourceTypes?: string[]
+  fullSweep?: boolean // مسح شامل: كل المنصات في جوبة واحدة — لبذر الـ16 مصدر فورًا
 }
 
 /** Process one DISCOVERY job: search → normalize → dedup → classify → score → maybe research. */
@@ -71,8 +72,9 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     : { queries: [payload.query ?? "عملاء محتاجين خدمات برمجية في مصر"], sources: ["web"], freshness_days: 14, min_score: 50, goal: "ad-hoc", language: ["ar", "en"] }
 
   // موجة المنصات الكاملة: الأنواع المسجلة + دوران بالساعة على باقي المنصات المبنية (شغّل باقي المصادر)
+  // fullSweep: كل المنصات مرة واحدة — بذرة فورية للـ16 مصدر
   const declared = payload.sourceTypes ?? asArray(rule?.sourceTypes)
-  const sourceTypes = expandSourceTypes(declared)
+  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep) })
   // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
   // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
   let queries = plan.queries
@@ -88,7 +90,12 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       queries = [...poach, ...queries]
     }
   } catch { /* بدون منافسين — البحث العادي */ }
-  const { items, adaptersUsed } = await runDiscovery(sourceTypes, queries, 4)
+  const { items, adaptersUsed } = await runDiscovery(
+    sourceTypes,
+    queries,
+    payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
+    payload.fullSweep ? { maxSearches: 16, passes: 1 } : undefined,
+  )
 
   // Persist a SearchJob record for observability
   const source = payload.sourceId
@@ -451,12 +458,24 @@ async function processSourceEvaluationJob(jobId: string): Promise<string> {
 }
 
 /** Main tick: create scheduled discovery jobs from rules, then process a batch. */
-export async function processTick(maxJobs = 6): Promise<{ processed: number; details: string[]; scheduledRules: number }> {
+export async function processTick(
+  maxJobs = 6,
+  opts?: { fullSweep?: boolean },
+): Promise<{ processed: number; details: string[]; scheduledRules: number }> {
   // 0) Recover stale RUNNING jobs (worker crashed mid-job)
   await db.job.updateMany({
     where: { status: "RUNNING", lockedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } },
     data: { status: "QUEUED", lockedAt: null, workerId: null },
   })
+
+  // 0.5) المسح الشامل: جوبة اكتشاف لكل ورشة على كل المنصات دفعة واحدة (؟full=1)
+  // — بتزرع الـ16 مصدر بالليدز فورًا بدل ما الموجة الدوارة تاخد ساعات
+  if (opts?.fullSweep) {
+    const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 3 })
+    for (const w of wsIds) {
+      await enqueueJob(w.id, "DISCOVERY", { fullSweep: true, query: "عملاء محتاجين خدمات رقمية في مصر" }, 80)
+    }
+  }
 
   // 1) Scheduler: enqueue due rules (every tick checks; jobs are cheap and idempotent)
   const rules = await db.searchRule.findMany({ where: { enabled: true }, orderBy: { priority: "desc" } })

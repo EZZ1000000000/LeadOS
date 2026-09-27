@@ -553,6 +553,89 @@ export const PLATFORM_SITES: Record<string, string[]> = {
 /** سقف أنواع البحث المدفوعة في الجوبة الواحدة — مصادر الـJSON المجانية مش محسوبة معاه */
 export const MAX_SOURCE_TYPES_PER_JOB = 6
 
+// ═════ أسئلة كل منصة بلغتها هي ═════
+// (السبب: المنصات الدوارة كانت بتاخد أسئلة القاعدة العامة زي «كافيهات مدينة نصر»
+//  — wuzzuf وOLX وQuora عمرها ما هيردوا على السؤال ده = صفر نتايج من 9 منصات)
+const SUBJECT_CLEAN_RE = /^(محتاجين|محتاج|عاوزين|عاوز|عايزين|عايز|حد يعرف حد|حد يعرف|مين يعرف|مين ينصحني|بدور على|ببحث عن|ترشيح|بديل|شركة)\s+/
+
+export const PLATFORM_QUERY_SHAPES: Record<string, { shape: (s: string) => string[]; seeds: string[] }> = {
+  JOBS: {
+    shape: (s) => [`مطلوب ${s}`, `${s} وظائف`],
+    seeds: ["مطلوب مدير مبيعات", "مطلوب مصمم جرافيك", "مطلوب مسؤول تسويق", "شركة بتوظف مبرمج", "مطلوب محاسب مصر"],
+  },
+  MARKETPLACE: {
+    shape: (s) => [`${s} للبيع`],
+    seeds: ["كافيه للبيع", "مطعم للبيع", "محل ملابس للبيع", "معدات مطعم للبيع", "شركة سياحه للبيع", "مصنع صغير للبيع"],
+  },
+  ADS_LIBRARY: {
+    shape: (s) => [`${s} اعلانات`],
+    seeds: ["اعلان متجر اونلاين", "اعلان عقارات مصر", "اعلان عيادة", "اعلان مطعم", "اعلان كورسات"],
+  },
+  QUORA: {
+    shape: (s) => [`افضل ${s}`, `ازاي اختار ${s}`],
+    seeds: ["افضل شركة برمجة في مصر", "ازاي اعمل تطبيق لمشروعي", "افضل سيستم كاشير للمطاعم", "هعمل بيزنس محتاج ايه"],
+  },
+  EVENTS: {
+    shape: (s) => [`معرض ${s}`, `مؤتمر ${s}`],
+    seeds: ["معرض مطاعم وكافيهات", "مؤتمر تقنية مصر", "فعاليات ريادة الأعمال", "معرض اغذية مصر", "قمة تسويق مصر"],
+  },
+  DIRECTORY: {
+    shape: (s) => [`${s} دليل شركات`],
+    seeds: ["شركات برمجة القاهرة", "شركات تسويق الكتروني مصر", "مصانع أغذية مصر", "شركات اعلانات مصر"],
+  },
+  REVIEWS: {
+    shape: (s) => [`${s} تقييمات`],
+    seeds: ["افضل كافيهات القاهرة تقييم", "مطاعم اسكندرية تقييمات", "سوبر ماركت تقييمات عملاء", "عيادات تقييمات مرضى"],
+  },
+  TIKTOK: {
+    shape: (s) => [`${s} تيك توك`],
+    seeds: ["براند مصري تيك توك", "متجر اونلاين مصر", "كافيه القاهرة", "منتج مصري اعلان"],
+  },
+  YOUTUBE: {
+    shape: (s) => [`${s} يوتيوب`],
+    seeds: ["تجربة مطعم مصر", "مراجعة متجر الكتروني", "ازاي اسوق مشروعي", "رائد اعمال مصري"],
+  },
+  X: {
+    shape: (s) => [`${s} تويتر`],
+    seeds: ["محتاج مبرمج", "شكوى خدمة عملاء مصر", "بدور على مصمم", "مشروعي الجديد"],
+  },
+  DISCORD: {
+    shape: (s) => [`${s} discord`],
+    seeds: ["سيرفر برمجة عربي", "مجتمع ريادة اعمال مصر", "discord تسويق رقمي", "discord فريلانسرز عرب"],
+  },
+  FACEBOOK: {
+    shape: (s) => [`${s} مجموعة`],
+    seeds: ["جروب اصحاب البيزنس", "مجموعة تجار مصر", "جروب مطاعم وكافيهات", "مجموعة تسويق مصر"],
+  },
+  INSTAGRAM: {
+    shape: (s) => [`${s} انستجرام`],
+    seeds: ["متجر انستجرام مصري", "براند ملابس مصر", "كافيه مصر انستجرام", "عيادة تجميل انستجرام"],
+  },
+  LINKEDIN: {
+    shape: (s) => [`${s} linkedin`],
+    seeds: ["شركة ناشئة مصر linkedin", "مدير تسويق مصر", "startup egypt linkedin", "شركة برمجة القاهرة"],
+  },
+  FREELANCE: {
+    shape: (s) => [`${s} مشروع مستقل`],
+    seeds: ["مطلوب مبرمج تطبيق مستقل", "اريد تصميم متجر الكتروني", "محتاج مونتير فيديو", "مطلوب كاتب محتوى"],
+  },
+}
+
+/**
+ * الاستعلامات المخصصة لمنصة معينة:
+ * 1) تحويل استعلام القاعدة للغة المنصة (كافيهات → «كافيهات للبيع» على OLX)
+ * 2) استعلامان مضمونان من بذور المنصة بالدوران بالساعة — المصدر يفضل نابض حتى لو
+ *    استعلام القاعدة ملوش أي علاقة بالمنصة.
+ */
+export function platformQueries(platform: string, baseQuery: string, max = 3): string[] {
+  const shape = PLATFORM_QUERY_SHAPES[platform]
+  if (!shape) return [baseQuery]
+  const subject = baseQuery.replace(SUBJECT_CLEAN_RE, "").replace(/\s*(مصر|Egypt)$/i, "").trim() || baseQuery
+  const hour = Math.floor(Date.now() / 3_600_000)
+  const seeds = [shape.seeds[hour % shape.seeds.length], shape.seeds[(hour + 1) % shape.seeds.length]]
+  return [...shape.shape(subject), ...seeds].slice(0, max)
+}
+
 /** المصادر اللي بتتصطاد بأدوات JSON/HTML مجانية من غير بحث أصلًا — مبتحرقش كوتة البحث */
 export const FREE_SOURCE_TYPES = ["REDDIT", "TELEGRAM", "RSS"] as const
 
@@ -564,7 +647,7 @@ export const FREE_SOURCE_TYPES = ["REDDIT", "TELEGRAM", "RSS"] as const
  * 2) دوران بالساعة على منصتين بحث جديدتين من غير المستخدمة — كل منصة بتاخد حصتها
  * كده زيزو بيصطاد على كل المصادر بدون أي تعديل على قواعد الداتابيز.
  */
-export function expandSourceTypes(types: string[]): string[] {
+export function expandSourceTypes(types: string[], opts?: { all?: boolean }): string[] {
   const base = types.filter(Boolean)
   const used = new Set(base)
   const all = Object.keys(PLATFORM_SITES)
@@ -572,11 +655,18 @@ export function expandSourceTypes(types: string[]): string[] {
   // مصادر JSON المجانية الأول — رخيصة وقوية ومش بتحسب من السقف
   const freeStrong = ["REDDIT", "TELEGRAM"].filter((t) => !used.has(t))
 
-  // الدوران بالساعة: منصتين بحث جديدتين كل نبضة من اللي مش مستخدمة
+  // المسح الشامل (full=1): كل المنصات مرة واحدة — لبذر الليدز على كل المصادر فورًا
+  if (opts?.all) {
+    const paid = all.filter((t) => !used.has(t) && !(FREE_SOURCE_TYPES as readonly string[]).includes(t))
+    return [...freeStrong, ...base, ...paid]
+  }
+
+  // الدوران بالساعة: 4 منصات بحث جديدة كل نبضة من اللي مش مستخدمة
+  // (كانت 2 — كانت هتاخد ساعات طويلة تغطي الـ11 منصة الدوارة)
   const searchUnused = all.filter((t) => !used.has(t) && !(FREE_SOURCE_TYPES as readonly string[]).includes(t))
   const hour = Math.floor(Date.now() / 3_600_000)
-  const start = searchUnused.length ? (hour * 2) % searchUnused.length : 0
-  const wave = searchUnused.slice(start, start + 2)
+  const start = searchUnused.length ? (hour * 4) % searchUnused.length : 0
+  const wave = searchUnused.slice(start, start + 4)
 
   // الأنواع الأصلية + حصة الدوران حسب السقف (المصادر المجانية مش بتتحاسب)
   const budget = Math.max(0, MAX_SOURCE_TYPES_PER_JOB - base.length)
@@ -893,20 +983,21 @@ export async function runDiscovery(
   sourceTypes: string[],
   queries: string[],
   limitPerQuery = 5,
+  opts?: { maxSearches?: number; passes?: number },
 ): Promise<{ items: DiscoveredItem[]; adaptersUsed: string[] }> {
   const items: DiscoveredItem[] = []
   const adaptersUsed: string[] = []
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
   const RECENT = 14
 
-  const maxSearches = 10 // hard cap per job — was 6; raised for the lead-volume wave (still time-budget safe)
+  const maxSearches = opts?.maxSearches ?? 10 // hard cap per job — full-sweep mode رافعه لـ16
   let searches = 0
 
   // جولات round-robin — كل نوع بياخد استعلام في الجولة قبل ما حد ياخد استعلام تاني:
   // البحث العام المنتِج مش بياكل الكوتة كلها قبل ما المنصات الدوارة (الموجة) والمجانية تاخد نصيبها
   // (الدليل من الإنتاج: نبضات كاملة طلعت adapters=web_search بس — الويب كان بيملى كوتة العناصر ويقفل)
   const FREE = FREE_SOURCE_TYPES as readonly string[]
-  const passes = Math.min(4, Math.max(1, queries.length))
+  const passes = Math.min(opts?.passes ?? 4, Math.max(1, queries.length))
   for (let pass = 0; pass < passes; pass++) {
     for (const st of types) {
       if (searches >= maxSearches || items.length >= limitPerQuery * 6) break
@@ -945,7 +1036,11 @@ export async function runDiscovery(
             if (batch.length) adaptersUsed.push("web_rss_fallback")
           }
         } else if (PLATFORM_SITES[st]) {
-          batch = await platformAdapter(st, q, limitPerQuery, RECENT)
+          // المنصة بتاخد استعلامات بلغتها هي — مش استعلام القاعدة العام
+          // (السبب: «كافيهات مدينة نصر» على wuzzuf/OLX/Quora = صفر نتايج = 9 منصات ميتة)
+          const qs = platformQueries(st, q)
+          const qq = qs[pass % qs.length]
+          batch = await platformAdapter(st, qq, limitPerQuery, RECENT)
           if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
         } else if (st === "NEWS") {
           batch = await webAdapter(q, limitPerQuery, RECENT, true)
