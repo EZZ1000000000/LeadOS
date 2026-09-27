@@ -432,6 +432,8 @@ model Lead {
   intent          String    @default("UNKNOWN") // IntentLevel
   segment         String    @default("AGENCY") // LeadSegment: CARDS | AGENCY | BOTH
   leadSourceType  String // LeadSourceType
+  sourcePlatform  String?   // المنصة من الـ16 (PLATFORM_SITES) — فلتر لوحة التحكم
+  intentSignal    String?   // EXPLICIT_NEED | COMPETITOR_ENGAGER | AD_SPENDER | MARKET_LIST
   score           Int       @default(0)
   intentScore     Int       @default(0)
   fitScore        Int       @default(0)
@@ -473,6 +475,8 @@ model Lead {
 
   @@index([workspaceId, status, score])
   @@index([workspaceId, leadSourceType, createdAt])
+  @@index([workspaceId, sourcePlatform])
+  @@index([workspaceId, intentSignal])
   @@index([workspaceId, segment, score])
   @@index([workspaceId, temperature, intent])
   @@index([assignedToId, status])

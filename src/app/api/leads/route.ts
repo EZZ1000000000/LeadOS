@@ -17,6 +17,8 @@ export async function GET(req: Request) {
   const industry = url.searchParams.get("industry")
   const city = url.searchParams.get("city")
   const minScore = url.searchParams.get("minScore")
+  const platform = url.searchParams.get("platform") // فلتر المنصة الـ16 (sourcePlatform)
+  const intentSignal = url.searchParams.get("intentSignal") // صاحب حاجة صريحة / بيقارن بالمنافسين / بيصرف إعلانات
   const panel = url.searchParams.get("panel")
   const limit = Math.min(100, Number(url.searchParams.get("limit") ?? 60))
 
@@ -26,6 +28,8 @@ export async function GET(req: Request) {
   if (status && status !== "ALL") where.status = status as never
   if (temperature && temperature !== "ALL") where.temperature = temperature as never
   if (source && source !== "ALL") where.leadSourceType = source as never
+  if (platform && platform !== "ALL") where.sourcePlatform = platform
+  if (intentSignal && intentSignal !== "ALL") where.intentSignal = intentSignal
   if (minScore && Number(minScore) > 0) where.score = { gte: Number(minScore) }
   let businessFilter: Prisma.BusinessWhereInput | undefined
   if (industry && industry !== "ALL") businessFilter = { ...businessFilter, industry: { contains: industry } }
@@ -51,9 +55,23 @@ export async function GET(req: Request) {
   })
   const leads = rawLeads.map((l) => ({ ...l, serviceNeeds: asArray(l.serviceNeeds) }))
 
+  // عدادات لوحة التحكم: توزيع الليدز على المنصات الـ16 + إشارات النية (على مستوى الورك-سبيس كله)
+  const [platformCounts, intentCounts] = await Promise.all([
+    db.lead.groupBy({ by: ["sourcePlatform"], where: { workspaceId: wsId }, _count: { _all: true } }).catch(() => []),
+    db.lead.groupBy({ by: ["intentSignal"], where: { workspaceId: wsId }, _count: { _all: true } }).catch(() => []),
+  ])
+
   const facets = {
     industries: [...new Set(leads.map((l) => l.business?.industry).filter(Boolean))],
     cities: [...new Set(leads.map((l) => l.business?.city).filter(Boolean))],
+    platforms: platformCounts
+      .filter((g) => g.sourcePlatform)
+      .map((g) => ({ key: g.sourcePlatform as string, count: g._count._all }))
+      .sort((a, b) => b.count - a.count),
+    intents: intentCounts
+      .filter((g) => g.intentSignal)
+      .map((g) => ({ key: g.intentSignal as string, count: g._count._all }))
+      .sort((a, b) => b.count - a.count),
   }
   return json({ leads, facets })
 }

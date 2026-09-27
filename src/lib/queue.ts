@@ -73,7 +73,22 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
   // موجة المنصات الكاملة: الأنواع المسجلة + دوران بالساعة على باقي المنصات المبنية (شغّل باقي المصادر)
   const declared = payload.sourceTypes ?? asArray(rule?.sourceTypes)
   const sourceTypes = expandSourceTypes(declared)
-  const { items, adaptersUsed } = await runDiscovery(sourceTypes, plan.queries, 4)
+  // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
+  // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
+  let queries = plan.queries
+  try {
+    const comps = await db.competitor.findMany({
+      where: { competitor: { workspaceId: wsId } },
+      include: { competitor: { select: { name: true } } },
+      take: 4,
+    })
+    const names = [...new Set(comps.map((c) => c.competitor?.name?.trim()).filter(Boolean))] as string[]
+    if (names.length) {
+      const poach = names.slice(0, 2).map((n) => `بديل ${n} توصية`) as string[]
+      queries = [...poach, ...queries]
+    }
+  } catch { /* بدون منافسين — البحث العادي */ }
+  const { items, adaptersUsed } = await runDiscovery(sourceTypes, queries, 4)
 
   // Persist a SearchJob record for observability
   const source = payload.sourceId
@@ -198,6 +213,17 @@ export async function ingestDiscoveredItems(
       ? (item.rawData as { platform?: string }).platform
       : undefined
     if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية/i.test(title)) continue
+    // تصنيف إشارة النية (أولوية الصياد): صاحب الحاجة الصريحة → اللي بيقارن بالمنافسين → اللي بيصرف إعلانات → قوائم السوق
+    const hay = `${item.title ?? ""} ${item.body}`
+    const intentSignal: string | null = itemPlatform === "ADS_LIBRARY"
+      ? "AD_SPENDER"
+      : isMapsBusiness
+        ? "MARKET_LIST"
+        : /محتاج|عايز|عاوز|مطلوب|أبحث|ابحث|ببحث|بحاجة|ناقص|دور علي|بيدور|need|looking for|seeking|we need/i.test(hay)
+          ? "EXPLICIT_NEED"
+          : /بديل|توصية|مين يعرف|أنصح|تنصحوا|اقترحوا|مقارنة|أحسن من|recommend|alternative|switch/i.test(hay)
+            ? "COMPETITOR_ENGAGER"
+            : null
     // Normalize + store ContentItem (unique per source+externalId)
     let content
     try {
@@ -302,6 +328,9 @@ export async function ingestDiscoveredItems(
         leadSourceType: (typeof (item.rawData as { platform?: string } | null)?.platform === "string"
           ? (["FACEBOOK", "INSTAGRAM", "X", "LINKEDIN", "REDDIT", "TIKTOK", "YOUTUBE"].includes((item.rawData as { platform?: string }).platform as string) ? "SOCIAL" : (item.rawData as { platform?: string }).platform === "GOOGLE_MAPS" ? "GOOGLE_MAPS" : "DISCOVERY")
           : source.type === "GOOGLE_MAPS" ? "GOOGLE_MAPS" : "DISCOVERY") as never,
+        sourcePlatform: itemPlatform ?? (source.type === "GOOGLE_MAPS" ? "GOOGLE_MAPS" : null),
+        intentSignal,
+        metadata: { platform: itemPlatform ?? null, intentSignal, discoveredVia: source.name } as Prisma.InputJsonValue,
         intent: classification.intent,
         intentScore: classification.intent === "VERY_HIGH" ? 95 : classification.intent === "HIGH" ? 80 : 55,
         urgencyScore: classification.urgency === "high" ? 90 : classification.urgency === "medium" ? 60 : 30,
@@ -319,6 +348,10 @@ export async function ingestDiscoveredItems(
     })
     leadsCreated++
     await recomputeLeadScore(lead.id, { workspaceId: wsId })
+    // مكافأة أولوية الصياد: صاحب الحاجة الصريحة +8 واللي بيقارن بالمنافسين +5
+    if (intentSignal === "EXPLICIT_NEED" || intentSignal === "COMPETITOR_ENGAGER") {
+      await db.lead.update({ where: { id: lead.id }, data: { score: { increment: intentSignal === "EXPLICIT_NEED" ? 8 : 5 } } }).catch(() => undefined)
+    }
 
     // سلاسل المتابعة: تجنيد تلقائي للليد الجديد في سلسلة النشر (لو مفعّلة)
     // سياسة الرد-فقط: الخطوات بتطلع مهام بنص جاهز — مفيش إرسال آلي استباقي

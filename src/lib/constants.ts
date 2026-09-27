@@ -179,6 +179,15 @@ export const LEAD_SOURCE_TYPE_LABELS: Record<string, string> = {
   SOCIAL: "سوشيال ميديا", OTHER: "أخرى",
 }
 
+/** إشارات النية — أولوية الصياد: صاحب الحاجة الصريحة أولًا، بعدين اللي بيقارن بالمنافسين */
+export const INTENT_SIGNALS = ["EXPLICIT_NEED", "COMPETITOR_ENGAGER", "AD_SPENDER", "MARKET_LIST"] as const
+export const INTENT_SIGNAL_LABELS: Record<string, string> = {
+  EXPLICIT_NEED: "🔥 صاحب حاجة صريحة",
+  COMPETITOR_ENGAGER: "⚔️ بيقارن بالمنافسين",
+  AD_SPENDER: "💰 بيصرف إعلانات",
+  MARKET_LIST: "📋 قائمة السوق",
+}
+
 export const CONFIDENCE_LEVELS = ["VERY_HIGH", "HIGH", "MEDIUM", "LOW", "UNKNOWN"] as const
 export const CONFIDENCE_LABELS: Record<string, string> = {
   VERY_HIGH: "عالية جدًا", HIGH: "عالية", MEDIUM: "متوسطة", LOW: "منخفضة", UNKNOWN: "غير محددة",

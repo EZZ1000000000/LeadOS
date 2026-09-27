@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { Search, Plus, Bookmark, Users, Upload, Link2 } from "lucide-react"
-import { LEAD_STATUSES, LEAD_STATUS_LABELS, SOURCE_TYPES, LEAD_SOURCE_TYPE_LABELS, SERVICE_CATALOG, INDUSTRY_CATALOG, serviceAr, industryAr } from "@/lib/constants"
+import { LEAD_STATUSES, LEAD_STATUS_LABELS, SOURCE_TYPES, LEAD_SOURCE_TYPE_LABELS, SOURCE_TYPE_LABELS, INTENT_SIGNALS, INTENT_SIGNAL_LABELS, SERVICE_CATALOG, INDUSTRY_CATALOG, serviceAr, industryAr } from "@/lib/constants"
 
 interface LeadRow {
   id: string
@@ -19,6 +19,8 @@ interface LeadRow {
   temperature: string
   intent: string
   leadSourceType: string
+  sourcePlatform?: string | null
+  intentSignal?: string | null
   score: number
   serviceNeeds: string[]
   summary: string | null
@@ -30,6 +32,9 @@ interface LeadRow {
 }
 
 const SAVED_VIEWS: Array<{ name: string; filters: Record<string, string> }> = [
+  { name: "🔥 صاحب حاجة صريحة", filters: { intentSignal: "EXPLICIT_NEED" } },
+  { name: "⚔️ عملاء المنافسين", filters: { intentSignal: "COMPETITOR_ENGAGER" } },
+  { name: "💰 بيصرفوا إعلانات", filters: { intentSignal: "AD_SPENDER" } },
   { name: "HOT Leads اليوم", filters: { temperature: "HOT" } },
   { name: "لم يتم التواصل معهم", filters: { status: "NEW" } },
   { name: "Score فوق 80", filters: { minScore: "80" } },
@@ -40,6 +45,8 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
   const [status, setStatus] = useState("ALL")
   const [temperature, setTemperature] = useState("ALL")
   const [source, setSource] = useState("ALL")
+  const [platform, setPlatform] = useState("ALL")
+  const [intentSignal, setIntentSignal] = useState("ALL")
   const [minScore, setMinScore] = useState("0")
   const { toast } = useToast()
 
@@ -50,17 +57,21 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
     if (status !== "ALL") p.set("status", status)
     if (temperature !== "ALL") p.set("temperature", temperature)
     if (source !== "ALL") p.set("source", source)
+    if (platform !== "ALL") p.set("platform", platform)
+    if (intentSignal !== "ALL") p.set("intentSignal", intentSignal)
     if (Number(minScore) > 0) p.set("minScore", minScore)
     return `/api/leads?${p.toString()}`
-  }, [q, status, temperature, source, minScore, panel])
+  }, [q, status, temperature, source, platform, intentSignal, minScore, panel])
 
-  const { data, loading, refresh } = useApi<{ leads: LeadRow[]; facets: { industries: string[]; cities: string[] } }>(query)
+  const { data, loading, refresh } = useApi<{ leads: LeadRow[]; facets: { industries: string[]; cities: string[]; platforms: Array<{ key: string; count: number }>; intents: Array<{ key: string; count: number }> } }>(query)
 
   const applySaved = (f: Record<string, string>) => {
     setStatus(f.status ?? "ALL")
     setTemperature(f.temperature ?? "ALL")
     setMinScore(f.minScore ?? "0")
     setSource(f.source ?? "ALL")
+    setPlatform(f.platform ?? "ALL")
+    setIntentSignal(f.intentSignal ?? "ALL")
     setQ("")
   }
 
@@ -86,6 +97,49 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
 
   return (
     <div className="space-y-4">
+      {/* أولوية الصياد: تبويبات إشارة النية */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-semibold text-muted-foreground">أولوية الصياد:</span>
+        <button
+          onClick={() => setIntentSignal("ALL")}
+          className={`rounded-full border px-3 py-1 text-xs transition-colors ${intentSignal === "ALL" ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"}`}
+        >
+          الكل
+        </button>
+        {INTENT_SIGNALS.map((s) => {
+          const c = data?.facets.intents.find((f) => f.key === s)?.count ?? 0
+          return (
+            <button
+              key={s}
+              onClick={() => setIntentSignal(s)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors ${intentSignal === s ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"}`}
+            >
+              {INTENT_SIGNAL_LABELS[s]} ({c})
+            </button>
+          )
+        })}
+      </div>
+
+      {/* فلتر المنصات الـ16 — من كل منصة بيجيب إيه */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-semibold text-muted-foreground">المصدر:</span>
+        <button
+          onClick={() => setPlatform("ALL")}
+          className={`rounded-full border px-3 py-1 text-xs transition-colors ${platform === "ALL" ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"}`}
+        >
+          كل المنصات
+        </button>
+        {(data?.facets.platforms ?? []).map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setPlatform(f.key)}
+            className={`rounded-full border px-3 py-1 text-xs transition-colors ${platform === f.key ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"}`}
+          >
+            {SOURCE_TYPE_LABELS[f.key] ?? f.key} ({f.count})
+          </button>
+        ))}
+      </div>
+
       {/* Saved views */}
       <div className="flex flex-wrap items-center gap-2">
         <Bookmark className="h-4 w-4 text-muted-foreground" />
@@ -234,7 +288,12 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
                           ))}
                         </div>
                       </td>
-                      <td className="hidden p-3 lg:table-cell"><SourceBadge type={l.leadSourceType} /></td>
+                      <td className="hidden p-3 lg:table-cell">
+                        <SourceBadge type={l.leadSourceType} />
+                        {l.sourcePlatform ? (
+                          <p className="mt-0.5 text-[10px] text-muted-foreground">{SOURCE_TYPE_LABELS[l.sourcePlatform] ?? l.sourcePlatform}</p>
+                        ) : null}
+                      </td>
                       <td className="hidden p-3 sm:table-cell text-xs font-bold">{l._count.opportunities}</td>
                       <td className="hidden p-3 text-xs text-muted-foreground sm:table-cell">{timeAgo(l.lastSeenAt)}</td>
                     </tr>
