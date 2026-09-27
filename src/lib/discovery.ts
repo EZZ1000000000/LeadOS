@@ -580,7 +580,9 @@ export function expandSourceTypes(types: string[]): string[] {
 
   // الأنواع الأصلية + حصة الدوران حسب السقف (المصادر المجانية مش بتتحاسب)
   const budget = Math.max(0, MAX_SOURCE_TYPES_PER_JOB - base.length)
-  return [...base, ...wave.slice(0, budget), ...freeStrong]
+  // المجاني الأول: Reddit/Telegram JSON بياخدوا نصيبهم المضمون قبل أي نوع بحث —
+  // (لو البحث العام اتخنق بكوتة العناصر، المصادر المجانية تفضل شغالة برضه)
+  return [...freeStrong, ...base, ...wave.slice(0, budget)]
 }
 
 // تثبيت جغرافي ذكي: مصر افتراضيًا — إلا لو الاستعلام خليجي (الرياض/دبي...) ساعتها من غير تثبيت
@@ -900,11 +902,17 @@ export async function runDiscovery(
   const maxSearches = 10 // hard cap per job — was 6; raised for the lead-volume wave (still time-budget safe)
   let searches = 0
 
-  // المنصات برّه والاستعلامات جوّه — ضمان إن كل نوع مصدر ياخد حصة بحث حتى مع سقف 10
-  // (قبل كده الاستعلام برّه: أول استعلام كان ياكل السقف كله والأنواع الأخيرة تفضل بلا حصة)
-  for (const st of types) {
-    for (const q of queries.slice(0, 4)) {
-      if (searches >= maxSearches || items.length >= limitPerQuery * 4) break
+  // جولات round-robin — كل نوع بياخد استعلام في الجولة قبل ما حد ياخد استعلام تاني:
+  // البحث العام المنتِج مش بياكل الكوتة كلها قبل ما المنصات الدوارة (الموجة) والمجانية تاخد نصيبها
+  // (الدليل من الإنتاج: نبضات كاملة طلعت adapters=web_search بس — الويب كان بيملى كوتة العناصر ويقفل)
+  const FREE = FREE_SOURCE_TYPES as readonly string[]
+  const passes = Math.min(4, Math.max(1, queries.length))
+  for (let pass = 0; pass < passes; pass++) {
+    for (const st of types) {
+      if (searches >= maxSearches || items.length >= limitPerQuery * 6) break
+      if (pass > 0 && FREE.includes(st)) continue // المجاني جولة واحدة تكفيه — الدوران تاني بيضيع وقته
+      const q = queries[pass]
+      if (!q) continue
       let batch: DiscoveredItem[] = []
       try {
         if (st === "GOOGLE_MAPS") {
@@ -953,13 +961,13 @@ export async function runDiscovery(
         batch = []
       }
       // مصادر الـJSON/HTML المجانية (REDDIT/TELEGRAM/RSS) أساسها مجاني ومش بيحرق كوتة البحث — مش بتتحسب من السقف
-      if (!(FREE_SOURCE_TYPES as readonly string[]).includes(st)) {
+      if (!FREE.includes(st)) {
         searches++
+        if (searches < maxSearches) await sleep(1200) // be gentle with the upstream search API
       }
       items.push(...batch)
-      if (searches < maxSearches) await sleep(1200) // be gentle with the upstream search API
     }
-    if (searches >= maxSearches || items.length >= limitPerQuery * 4) break
+    if (searches >= maxSearches || items.length >= limitPerQuery * 6) break
   }
 
   // Deduplicate by externalId (URL hash) and keep all-platform coverage
