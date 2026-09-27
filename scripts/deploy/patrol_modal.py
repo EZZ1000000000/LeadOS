@@ -2,7 +2,7 @@
 # deployment: python3 -m modal deploy scripts/deploy/patrol_modal.py
 # نبضة يدوية: python3 -m modal run scripts/deploy/patrol_modal.py::patrol
 #
-# السر (Modal Secret اسمه "leados") لازم يكون فيه على الأقل:
+# السركتس (زي ما هي منتشرة فعلًا على المودال): "leados-tick" + "camoufox-token" — أول واحد فيه:
 #   DATABASE_URL (Neon pooled) — FACEBOOK_SESSION_COOKIE — APIFY_TOKENS — CRON_SECRET
 # وباقي المفاتيح الاختيارية بتتقرا لو موجودة (SERPER_API_KEY, TAVILY_API_KEY, GEMINI_API_KEY...)
 
@@ -56,7 +56,7 @@ MINUTES_15 = 60 * 15
     image=image,
     schedule=modal.Period(minutes=15),
     timeout=320,  # النبضة لازم تخلص جوه 5 دقايق ونص — بعدها الجوب التالي يكمل الشغل
-    secrets=[modal.Secret.from_name("leados")],
+    secrets=[modal.Secret.from_name("leados-tick"), modal.Secret.from_name("camoufox-token")],
     scaledown_window=60,
 )
 def patrol() -> None:

@@ -15,14 +15,24 @@ import { zizoTick } from "@/lib/agent/zizo/brain"
 async function handle(req: Request) {
   const url = new URL(req.url)
   const secret = process.env.CRON_SECRET
+  const altSecret = process.env.CRON_SECRET_ALT // بديل آمن للتفعيل الخارجي — من غير تدوير السر الأساسي
   const authHeader = req.headers.get("authorization") ?? ""
   const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null
   const provided = req.headers.get("x-cron-secret") ?? bearer ?? url.searchParams.get("secret")
-  const authorized = (secret && provided === secret) || Boolean(await getSessionUser())
+  const authorized =
+    (secret && provided === secret) || (altSecret && provided === altSecret) || Boolean(await getSessionUser())
   if (!authorized) return jsonError("غير مصرح", 401)
 
   const maxJobs = Math.min(10, Number(url.searchParams.get("max") ?? 5))
-  const result = await processTick(maxJobs)
+  const debug = url.searchParams.get("debug") === "1"
+  let result: Awaited<ReturnType<typeof processTick>>
+  try {
+    result = await processTick(maxJobs)
+  } catch (err) {
+    // التشخيص: الخطأ بيرجع في الرد (الroute محمي بالسر) — عشان نشوف الكراش بدون لوجز runtime
+    console.error("[tick] processTick crashed:", err instanceof Error ? err.stack : err)
+    return jsonError(`tick crash: ${err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300)}${debug && err instanceof Error && err.stack ? " | stack: " + err.stack.slice(0, 500) : ""}`, 500)
+  }
 
   // تحدي الجروبات: مسح مستحقين (cooldown 15 دقيقة بيمنع التكرار)
   let groupScan: { scanned: number; newPosts: number; details: string[] } | null = null
