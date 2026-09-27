@@ -464,7 +464,7 @@ export function searchCooldownRemaining(): number {
   return Math.max(0, searchCooldownUntil - Date.now())
 }
 
-async function rawWebSearch(query: string, limit: number, recencyDays: number): Promise<{ results: WebSearchResult[]; provider: SearchProvider | "none" }> {
+export async function rawWebSearch(query: string, limit: number, recencyDays: number): Promise<{ results: WebSearchResult[]; provider: SearchProvider | "none" }> {
   // التبريد النشط → صفر نداءات (بندّخر الكوتة المتعافية للتابعة القادمة)
   if (searchCooldownRemaining() > 0) return { results: [], provider: "none" }
   const chain = preferredProvider
@@ -985,13 +985,20 @@ export async function runDiscovery(
   limitPerQuery = 5,
   opts?: { maxSearches?: number; passes?: number },
 ): Promise<{ items: DiscoveredItem[]; adaptersUsed: string[] }> {
-  const items: DiscoveredItem[] = []
   const adaptersUsed: string[] = []
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
   const RECENT = 14
 
-  const maxSearches = opts?.maxSearches ?? 10 // hard cap per job — full-sweep mode رافعه لـ16
+  const maxSearches = opts?.maxSearches ?? 10 // hard cap per job — المسح الشامل بيرفعه لـ18
   let searches = 0
+
+  // ═══ عدالة التوزيع (إصلاح: المصادر المجانية كانت بتاكل الكوتة كلها) ═══
+  // 1) كوتة لكل نوع: ريديت/تليجرام مش بيبلعوا 45 عنصر قبل ما المنصات المدفوعة توصل
+  // 2) دمج متناوب في الآخر: كل منصة ليها حضور في النتيجة النهائية مهما كان ترتيبها
+  const perTypeCap = limitPerQuery * 2
+  const totalCap = limitPerQuery * 10
+  const byType = new Map<string, DiscoveredItem[]>()
+  const collected = () => { let n = 0; for (const b of byType.values()) n += b.length; return n }
 
   // جولات round-robin — كل نوع بياخد استعلام في الجولة قبل ما حد ياخد استعلام تاني:
   // البحث العام المنتِج مش بياكل الكوتة كلها قبل ما المنصات الدوارة (الموجة) والمجانية تاخد نصيبها
@@ -1000,7 +1007,7 @@ export async function runDiscovery(
   const passes = Math.min(opts?.passes ?? 4, Math.max(1, queries.length))
   for (let pass = 0; pass < passes; pass++) {
     for (const st of types) {
-      if (searches >= maxSearches || items.length >= limitPerQuery * 6) break
+      if (searches >= maxSearches || collected() >= totalCap) break
       if (pass > 0 && FREE.includes(st)) continue // المجاني جولة واحدة تكفيه — الدوران تاني بيضيع وقته
       const q = queries[pass]
       if (!q) continue
@@ -1062,13 +1069,25 @@ export async function runDiscovery(
         searches++
         if (searches < maxSearches) await sleep(1200) // be gentle with the upstream search API
       }
-      items.push(...batch)
+      if (batch.length) {
+        const bucket = byType.get(st) ?? []
+        bucket.push(...batch)
+        byType.set(st, bucket.slice(0, perTypeCap))
+      }
     }
-    if (searches >= maxSearches || items.length >= limitPerQuery * 6) break
+    if (searches >= maxSearches || collected() >= totalCap) break
   }
 
-  // Deduplicate by externalId (URL hash) and keep all-platform coverage
+  // دمج متناوب بين الأنواع (round-robin على الدلاء) + إزالة المكرر — تغطية كل المنصات أول بأول
   const seen = new Set<string>()
-  const unique = items.filter((i) => (seen.has(i.externalId) ? false : (seen.add(i.externalId), true)))
-  return { items: unique.slice(0, limitPerQuery * 4), adaptersUsed: [...new Set(adaptersUsed)] }
+  const interleaved: DiscoveredItem[] = []
+  const maxLen = Math.max(0, ...[...byType.values()].map((b) => b.length))
+  for (let i = 0; i < maxLen && interleaved.length < limitPerQuery * 4; i++) {
+    for (const bucket of byType.values()) {
+      if (interleaved.length >= limitPerQuery * 4) break
+      const it = bucket[i]
+      if (it && !seen.has(it.externalId)) { seen.add(it.externalId); interleaved.push(it) }
+    }
+  }
+  return { items: interleaved, adaptersUsed: [...new Set(adaptersUsed)] }
 }

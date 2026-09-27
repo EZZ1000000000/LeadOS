@@ -94,7 +94,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     sourceTypes,
     queries,
     payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
-    payload.fullSweep ? { maxSearches: 16, passes: 1 } : undefined,
+    payload.fullSweep ? { maxSearches: 18, passes: 1 } : undefined,
   )
 
   // Persist a SearchJob record for observability
