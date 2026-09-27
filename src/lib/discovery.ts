@@ -550,6 +550,39 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   DISCORD: ["discord.com", "discord.gg"],
 }
 
+/** سقف أنواع البحث المدفوعة في الجوبة الواحدة — مصادر الـJSON المجانية مش محسوبة معاه */
+export const MAX_SOURCE_TYPES_PER_JOB = 6
+
+/** المصادر اللي بتتصطاد بأدوات JSON/HTML مجانية من غير بحث أصلًا — مبتحرقش كوتة البحث */
+export const FREE_SOURCE_TYPES = ["REDDIT", "TELEGRAM", "RSS"] as const
+
+/**
+ * موجة المنصات الكاملة (طلب: شغّل باقي المصادر):
+ * القاعدة في الداتابيز ممكن تكون متسجلة بـ3-4 أنواع بس — لكن المشروع مبني 16+ منصة.
+ * الدالة دي بتوسّع الأنواع لكل نبضة:
+ * 1) REDDIT/TELEGRAM دايمًا لو مش مستخدمين — أدوات JSON مجانية، صفر كوتة بحث
+ * 2) دوران بالساعة على منصتين بحث جديدتين من غير المستخدمة — كل منصة بتاخد حصتها
+ * كده زيزو بيصطاد على كل المصادر بدون أي تعديل على قواعد الداتابيز.
+ */
+export function expandSourceTypes(types: string[]): string[] {
+  const base = types.filter(Boolean)
+  const used = new Set(base)
+  const all = Object.keys(PLATFORM_SITES)
+
+  // مصادر JSON المجانية الأول — رخيصة وقوية ومش بتحسب من السقف
+  const freeStrong = ["REDDIT", "TELEGRAM"].filter((t) => !used.has(t))
+
+  // الدوران بالساعة: منصتين بحث جديدتين كل نبضة من اللي مش مستخدمة
+  const searchUnused = all.filter((t) => !used.has(t) && !(FREE_SOURCE_TYPES as readonly string[]).includes(t))
+  const hour = Math.floor(Date.now() / 3_600_000)
+  const start = searchUnused.length ? (hour * 2) % searchUnused.length : 0
+  const wave = searchUnused.slice(start, start + 2)
+
+  // الأنواع الأصلية + حصة الدوران حسب السقف (المصادر المجانية مش بتتحاسب)
+  const budget = Math.max(0, MAX_SOURCE_TYPES_PER_JOB - base.length)
+  return [...base, ...wave.slice(0, budget), ...freeStrong]
+}
+
 // تثبيت جغرافي ذكي: مصر افتراضيًا — إلا لو الاستعلام خليجي (الرياض/دبي...) ساعتها من غير تثبيت
 const GULF_RE = /الرياض|جدة|الدمام|السعودية|دبي|أبوظبي|ابوظبي|الشارقة|الشارقه|الإمارات|الامارات|قطر|الدوحة|الكويت|مسقط|المنامة|خليج|riyadh|dubai|jeddah|ksa|uae|qatar|kuwait|doha|bahrain|oman/i
 export function geoPin(query: string): string {
@@ -558,13 +591,49 @@ export function geoPin(query: string): string {
   return `${query} Egypt`
 }
 
+/**
+ * مطابقة رابط بموقع المنصة — بتدعم مسارات كاملة مش بس دومينات
+ * (زي "facebook.com/events" و"linkedin.com/jobs"): الهوست لازم يتطابق والمسار لو موجود.
+ * بتمنع نتايج المزودات اللي بتهمل operator الـsite: من التسرب لمنصة غلط.
+ */
+export function matchesSite(url: string, site: string): boolean {
+  try {
+    const u = new URL(url)
+    const h = u.hostname.replace(/^www\./, "").toLowerCase()
+    const clean = site.replace(/^https?:\/\//, "").replace(/^www\./, "").toLowerCase()
+    const [siteHost, ...sitePath] = clean.split("/")
+    if (!(h === siteHost || h.endsWith(`.${siteHost}`))) return false
+    if (!sitePath.length) return true
+    return `/${u.pathname.replace(/^\/+/, "")}`.startsWith(`/${sitePath.join("/")}`)
+  } catch {
+    return false
+  }
+}
+
 async function platformAdapter(platform: string, query: string, limit: number, recencyDays: number): Promise<DiscoveredItem[]> {
   const sites = PLATFORM_SITES[platform]
   if (!sites) return []
+  const pinned = geoPin(query)
   const siteQuery = sites.map((s) => `site:${s}`).join(" OR ")
-  const fullQuery = `(${siteQuery}) ${geoPin(query)}`
-  const { results, provider } = await rawWebSearch(fullQuery, limit, recencyDays)
-  return results.map((r) => toItem(r, { contentType: socialContentType(r.url), platform, query, recencyDays, provider }))
+  const onPlatform = (r: WebSearchResult) => sites.some((s) => matchesSite(r.url, s))
+  const mapItems = (rs: WebSearchResult[], provider: string) =>
+    rs.map((r) => toItem(r, { contentType: socialContentType(r.url), platform, query, recencyDays, provider }))
+
+  // المحاولة 1: الصيغة الكاملة (site: OR) — شغالة مع serper/tavily/serpapi
+  const first = await rawWebSearch(`(${siteQuery}) ${pinned}`, limit, recencyDays)
+  const cleanFirst = first.results.filter(onPlatform)
+  if (cleanFirst.length) return mapItems(cleanFirst, first.provider)
+
+  // المحاولة 2: استعلام نحيف + دومين رئيسي واحد — مزودات ز-ai بترفض سلاسل site: OR الطويلة
+  const slim = pinned.split(/\s+/).slice(0, 5).join(" ")
+  const second = await rawWebSearch(`site:${sites[0]} ${slim}`, limit, recencyDays)
+  const cleanSecond = second.results.filter(onPlatform)
+  if (cleanSecond.length) return mapItems(cleanSecond, second.provider)
+
+  // المحاولة 3: بحث عام بدون site: + فلترة على دومينات المنصة — أوسع تغطية لأي مزود
+  const third = await rawWebSearch(slim, limit * 2, recencyDays)
+  const filtered = third.results.filter(onPlatform)
+  return mapItems(filtered.slice(0, limit), third.provider)
 }
 
 // ---- Reddit JSON adapter (بدون مفاتيح: منشورات حقيقية بنصها الكامل — أقوى من site: search) ----
@@ -831,8 +900,10 @@ export async function runDiscovery(
   const maxSearches = 10 // hard cap per job — was 6; raised for the lead-volume wave (still time-budget safe)
   let searches = 0
 
-  for (const q of queries.slice(0, 4)) {
-    for (const st of types) {
+  // المنصات برّه والاستعلامات جوّه — ضمان إن كل نوع مصدر ياخد حصة بحث حتى مع سقف 10
+  // (قبل كده الاستعلام برّه: أول استعلام كان ياكل السقف كله والأنواع الأخيرة تفضل بلا حصة)
+  for (const st of types) {
+    for (const q of queries.slice(0, 4)) {
       if (searches >= maxSearches || items.length >= limitPerQuery * 4) break
       let batch: DiscoveredItem[] = []
       try {
@@ -881,7 +952,10 @@ export async function runDiscovery(
         console.warn(`[discovery] adapter ${st} failed on "${q.slice(0, 60)}": ${err instanceof Error ? err.message.slice(0, 120) : err}`)
         batch = []
       }
-      searches++
+      // مصادر الـJSON/HTML المجانية (REDDIT/TELEGRAM/RSS) أساسها مجاني ومش بيحرق كوتة البحث — مش بتتحسب من السقف
+      if (!(FREE_SOURCE_TYPES as readonly string[]).includes(st)) {
+        searches++
+      }
       items.push(...batch)
       if (searches < maxSearches) await sleep(1200) // be gentle with the upstream search API
     }

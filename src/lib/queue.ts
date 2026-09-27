@@ -4,7 +4,7 @@
 import type { Prisma } from "@prisma/client"
 import { db } from "@/lib/db"
 import { asArray } from "@/lib/constants"
-import { buildSearchPlan, runDiscovery, type DiscoveredItem } from "@/lib/discovery"
+import { buildSearchPlan, runDiscovery, expandSourceTypes, type DiscoveredItem } from "@/lib/discovery"
 import { classifyContent } from "@/lib/classification"
 import { findDuplicateLead, normalizePhone } from "@/lib/dedup"
 import { recomputeLeadScore } from "@/lib/scoring"
@@ -70,7 +70,9 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     ? buildSearchPlan(rule)
     : { queries: [payload.query ?? "عملاء محتاجين خدمات برمجية في مصر"], sources: ["web"], freshness_days: 14, min_score: 50, goal: "ad-hoc", language: ["ar", "en"] }
 
-  const sourceTypes = payload.sourceTypes ?? asArray(rule?.sourceTypes)
+  // موجة المنصات الكاملة: الأنواع المسجلة + دوران بالساعة على باقي المنصات المبنية (شغّل باقي المصادر)
+  const declared = payload.sourceTypes ?? asArray(rule?.sourceTypes)
+  const sourceTypes = expandSourceTypes(declared)
   const { items, adaptersUsed } = await runDiscovery(sourceTypes, plan.queries, 4)
 
   // Persist a SearchJob record for observability
