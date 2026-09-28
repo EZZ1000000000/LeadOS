@@ -999,6 +999,12 @@ export async function runDiscovery(
   const adaptersUsed: string[] = []
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
   const RECENT = 14
+  // فلتر النشر لكل منصة: المنصات اللي محتواها بعمر طويل (أسئلة كورا عمرها سنين،
+  // سيرفرات ديسكورد، معارض معلنة بدري، أدلة أعمال) مبتتقصش بـ14 يوم — نافذة أوسع
+  const RECENT_BY: Record<string, number> = {
+    QUORA: 90, DISCORD: 90, EVENTS: 75, DIRECTORY: 60, REVIEWS: 60, ADS_LIBRARY: 30, MARKETPLACE: 30,
+  }
+  const recentFor = (st: string) => RECENT_BY[st] ?? RECENT
 
   const maxSearches = opts?.maxSearches ?? 10 // hard cap per job — المسح الشامل بيرفعه لـ18
   let searches = 0
@@ -1062,7 +1068,7 @@ export async function runDiscovery(
           const qs = [...new Set([...(opts?.queriesByType?.[st] ?? []), ...platformQueries(st, q)])]
           const qq = qs[(pass + types.indexOf(st)) % qs.length]
           chosen = qq
-          batch = await platformAdapter(st, qq, limitPerQuery, RECENT)
+          batch = await platformAdapter(st, qq, limitPerQuery, recentFor(st))
           if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
         } else if (st === "NEWS") {
           batch = await webAdapter(q, limitPerQuery, RECENT, true)

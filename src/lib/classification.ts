@@ -128,6 +128,9 @@ export async function classifyContent(
         content:
           `أنت مصنف Leads داخل منصة LeadOS. حلل النص وحدد إن كان صاحبه عميل محتمل (lead) لوكالة برمجية/تسويقية مصرية. ` +
           `الخدمات المعروضة بتشمل: مواقع وتطبيقات وتسويق رقمي وفوتوشوت/تصوير احترافي، وكمان نظام كروت النت/الواي فاي للكافيهات والمطاعم. ` +
+          `القاعدة الذهبية (مهمة جدًا): أي بيزنس/محل/تاجر/براند مصري ناشط تجاريًا في المنشور — بيبيع، بيستورد، بيوزع، بيفتح فرع، بيعرض أصوله (كافيه/مطعم/محل للبيع)، بيوظف، بيعلن عن عروض لتجار تانيين — ` +
+          `ده lead صحيح: is_lead=true، lead_type=opportunity_signal، score بين 45-60. متضيعش صيادين بسبب صرامة زايدة. ` +
+          `ارفض بس: (1) اللي بيبيع هو نفسه الخدمة اللي بنبيعها (مبرمجين/مسوقين/مصممين/وكالات بتقدم خدماتها) (2) أخبار وأبحاث وأسعار عملات (3) الناس اللي بتراجع بيزنس تاني مش صاحب البيزنس (4) محتوى عام من غير بيزنس محدد. ` +
           `ارجع JSON فقط بالشكل: {"is_lead":bool,"lead_type":"inbound_request|opportunity_signal|not_lead","services":["website|mobile_app|pos|crm|erp|ecommerce|booking|ordering|marketing|automation|seo|branding|cloud|integrations|wifi_cards"],"business_type":"cafe|restaurant|clinic|retail|gym|salon|pharmacy|real_estate|law_firm|factory|education|","intent":"VERY_HIGH|HIGH|MEDIUM|LOW|NONE","score":0-99,"urgency":"high|medium|low","reason":"سبب قصير بالعربي","language":"ar|en"}. ` +
           `لا تخترع بيانات غير موجودة. القيم المسموحة فقط.`,
       },

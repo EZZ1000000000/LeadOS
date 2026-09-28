@@ -544,6 +544,16 @@ export async function processTick(
     }
   }
 
+  // 0.6) إحياء الجوبات العالقة: instance اتقتل وقت النشر/التجميد (serverless)
+  // → RUNNING أقدم من 20 دقيقة من غير اكتمال يرجع QUEUED ويتعالج تاني
+  try {
+    const revived = await db.job.updateMany({
+      where: { status: "RUNNING", startedAt: { lt: new Date(Date.now() - 20 * 60_000) } },
+      data: { status: "QUEUED", startedAt: null, lockedAt: null, workerId: null },
+    })
+    if (revived.count) console.log(`[tick] revived ${revived.count} stale RUNNING job(s)`)
+  } catch { /* best-effort */ }
+
   // 1) Scheduler: enqueue due rules (every tick checks; jobs are cheap and idempotent)
   const rules = await db.searchRule.findMany({ where: { enabled: true }, orderBy: { priority: "desc" } })
   let scheduledRules = 0
