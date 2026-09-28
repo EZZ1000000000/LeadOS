@@ -477,6 +477,12 @@ export async function aiChat(messages: AiMessage[], opts: AiCallOptions = {}): P
   if (!result) result = await zaiChat(messages, task)
 
   if (result) void logRun(result, opts, true)
+  else void logRun(
+    { text: "", provider: "OTHER", model: "none", latencyMs: 0, task },
+    opts,
+    false,
+    "all-providers-failed (dahl+nvidia+zai)",
+  )
   return result
 }
 
