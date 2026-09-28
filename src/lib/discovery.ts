@@ -263,6 +263,10 @@ interface WebSearchResult {
   host_name: string
   date?: string
   rank?: number
+  /** إعلان ممول من SERP (حقل ads من Serper) — معلن بيصرف فلوس في نفس النيش = عميل ذهب */
+  sponsored?: boolean
+  /** الدومين الظاهر في الإعلان (ادvertiser domain) — بيستخدم كاسم/موقع المعلن */
+  displayedLink?: string
 }
 
 type SearchProvider = "serper" | "tavily" | "serpapi" | "exa" | "searxng" | "zai"
@@ -295,6 +299,10 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs = 15000): Pro
 }
 
 // --- Serper (google.serper.dev — أعلى جودة وأرخص فشل) ---
+// ═══ سرقة إعلانات المنافسين الممولة (طلب: العملاء من الإعلانات الممولة من كل المصادر) ═══
+// كل نداء SERP بيرجع كمان حقل `ads` — إعلانات جوجل المدفوعة الفعلية لمعلنين في نفس النيش.
+// المعلن ده بيصرف فلوس على إعلانات الآن (AD_SPENDER) — أعلى إشارة قدرة دفع — وكنّا بندفع مقابل
+// البحث ده و نرمي الإعلانات! دلوقتي بتتقرا وتتقدم فوق الـorganic كأعلى قيمة.
 async function searchSerper(query: string, limit: number, recencyDays: number): Promise<WebSearchResult[]> {
   const key = process.env.SERPER_API_KEY
   if (!key) throw new Error("no key")
@@ -305,8 +313,9 @@ async function searchSerper(query: string, limit: number, recencyDays: number): 
     body: JSON.stringify({ q: query, num: Math.min(limit, 20), gl: "eg", hl: "ar", ...(tbs ? { tbs } : {}) }),
   })) as {
     organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string; position?: number }>
+    ads?: Array<{ title?: string; link?: string; snippet?: string; description?: string; displayed_link?: string; position?: number }>
   }
-  return (data.organic ?? [])
+  const organic = (data.organic ?? [])
     .filter((r) => r.link)
     .map((r) => ({
       url: r.link!,
@@ -316,6 +325,21 @@ async function searchSerper(query: string, limit: number, recencyDays: number): 
       date: r.date,
       rank: r.position,
     }))
+  // الإعلانات الممولة: عنوان الإعلان + نصه + رابط الهبوط + الدومين الظاهر للمعلن
+  const ads = (data.ads ?? [])
+    .filter((a) => a.link)
+    .slice(0, 4)
+    .map((a) => ({
+      url: a.link!,
+      name: a.title ?? "",
+      snippet: a.snippet ?? a.description ?? "",
+      host_name: hostnameOf(a.link!),
+      date: undefined,
+      rank: 0, // فوق كل الـorganic — أعلى نية
+      sponsored: true,
+      displayedLink: a.displayed_link ?? hostnameOf(a.link!),
+    }))
+  return [...ads, ...organic]
 }
 
 // --- Tavily ---
@@ -513,6 +537,8 @@ function toItem(
       adapter: "live_web",
       provider: opts.provider ?? "zai",
       freshnessDays: opts.recencyDays,
+      // بصمة الإعلان الممول: المعلن ده بيصرف فلوس الآن — الابتلاع بيحوله AD_SPENDER تلقائيًا
+      ...(r.sponsored ? { sponsored: true, advertiser: r.displayedLink ?? r.host_name, adChannel: "google_ads" } : {}),
     } as Prisma.InputJsonValue,
   }
 }
@@ -754,24 +780,31 @@ async function platformAdapter(platform: string, query: string, limit: number, r
   const pinned = geoPin(query)
   const siteQuery = sites.map((s) => `site:${s}`).join(" OR ")
   const onPlatform = (r: WebSearchResult) => sites.some((s) => matchesSite(r.url, s))
+  // ═══ الإعلانات الممولة بتتجاوز فلتر المنصة ═══
+  // إعلان ظهر في بحث المنصة = معلن بيستهدف نفس الجمهور/النيش الآن — دومين هبوطه مش لازم
+  // يكون جوه المنصة. ده بالظبط «العملاء من إعلانات المنافسين من كل المصادر» — ببلاش من نفس النداء.
+  const sponsoredOf = (rs: WebSearchResult[]) => rs.filter((r) => r.sponsored).slice(0, 3)
   const mapItems = (rs: WebSearchResult[], provider: string) =>
     rs.map((r) => toItem(r, { contentType: socialContentType(r.url), platform, query, recencyDays, provider }))
 
   // المحاولة 1: الصيغة الكاملة (site: OR) — شغالة مع serper/tavily/serpapi
   const first = await rawWebSearch(`(${siteQuery}) ${pinned}`, limit, recencyDays)
+  const sponsoredFirst = sponsoredOf(first.results)
   const cleanFirst = first.results.filter(onPlatform)
-  if (cleanFirst.length) return mapItems(cleanFirst, first.provider)
+  if (cleanFirst.length || sponsoredFirst.length) return mapItems([...sponsoredFirst, ...cleanFirst], first.provider)
 
   // المحاولة 2: استعلام نحيف + دومين رئيسي واحد — مزودات ز-ai بترفض سلاسل site: OR الطويلة
   const slim = pinned.split(/\s+/).slice(0, 5).join(" ")
   const second = await rawWebSearch(`site:${sites[0]} ${slim}`, limit, recencyDays)
+  const sponsoredSecond = sponsoredOf(second.results)
   const cleanSecond = second.results.filter(onPlatform)
-  if (cleanSecond.length) return mapItems(cleanSecond, second.provider)
+  if (cleanSecond.length || sponsoredSecond.length) return mapItems([...sponsoredSecond, ...cleanSecond], second.provider)
 
   // المحاولة 3: بحث عام بدون site: + فلترة على دومينات المنصة — أوسع تغطية لأي مزود
   const third = await rawWebSearch(slim, limit * 2, recencyDays)
+  const sponsoredThird = sponsoredOf(third.results)
   const filtered = third.results.filter(onPlatform)
-  return mapItems(filtered.slice(0, limit), third.provider)
+  return mapItems([...sponsoredThird, ...filtered.slice(0, limit)], third.provider)
 }
 
 // ---- Reddit JSON adapter (بدون مفاتيح: منشورات حقيقية بنصها الكامل — أقوى من site: search) ----
@@ -817,6 +850,37 @@ const TELEGRAM_CHANNELS = [
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+
+// ═══ ماسح البصمات الإعلانية (طبقة سرقة الإعلانات الممولة — تعمل من كل المصادر) ═══
+// أي بيزنس موقعه فيه بيكسل إعلاني حي = بيصرف فلوس على إعلانات الآن — دليل مباشر بدون مكتبات
+// إعلانات محجوبة من السيرفر. دقة عالية: البيكسل مابيتحطش إلا لما حد يشغّل حملة فعلًا.
+const AD_PIXEL_SIGNATURES: Array<{ channel: string; re: RegExp }> = [
+  { channel: "meta", re: /connect\.facebook\.net\/[^"']*fbevents\.js|fbq\s*\(\s*['"]init/i },
+  { channel: "google_ads", re: /googletagmanager\.com\/gtag\/js\?id=AW-|google_conversion_id|googlesyndication\.com|gtag\s*\(\s*['"]config['"]\s*,\s*['"]AW-|doubleclick\.net|google-ads.*conversion/i },
+  { channel: "tiktok", re: /analytics\.tiktok\.com\/i18n\/pixel|ttq\.load\s*\(/i },
+  { channel: "linkedin", re: /snap\.licdn\.com\/li\.lms-analytics|_linkedin_partner_id/i },
+  { channel: "snapchat", re: /sc-static\.net\/scevent\.min\.js|snaptr\s*\(\s*['"]init/i },
+  { channel: "x", re: /static\.ads-twitter\.com|twq\s*\(\s*['"]init/i },
+]
+
+/** فحص موقع بيزنس: بيرجع قنوات الإعلانات الحية اللي بيكسلاتها ظاهرة (فارغ = لا دليل/محجوب) */
+export async function detectAdPixels(url: string): Promise<string[]> {
+  try {
+    const target = url.startsWith("http") ? url : `https://${url}`
+    const res = await fetch(target, {
+      headers: { "User-Agent": BROWSER_UA, "Accept-Language": "ar,en;q=0.8" },
+      signal: AbortSignal.timeout(7000),
+      redirect: "follow",
+    })
+    if (!res.ok) return []
+    const ct = res.headers.get("content-type") ?? ""
+    if (!ct.includes("html")) return []
+    const html = (await res.text()).slice(0, 400_000)
+    return AD_PIXEL_SIGNATURES.filter((p) => p.re.test(html)).map((p) => p.channel)
+  } catch {
+    return []
+  }
+}
 
 function stripHtml(html: string): string {
   return html

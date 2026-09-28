@@ -4,7 +4,7 @@
 import type { Prisma } from "@prisma/client"
 import { db } from "@/lib/db"
 import { asArray } from "@/lib/constants"
-import { buildSearchPlan, runDiscovery, expandSourceTypes, competitorAdQueries, type DiscoveredItem } from "@/lib/discovery"
+import { buildSearchPlan, runDiscovery, expandSourceTypes, competitorAdQueries, detectAdPixels, type DiscoveredItem } from "@/lib/discovery"
 import { classifyContent } from "@/lib/classification"
 import { findDuplicateLead, normalizePhone } from "@/lib/dedup"
 import { recomputeLeadScore } from "@/lib/scoring"
@@ -134,10 +134,11 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
   // لكل منافس مسجل: استعلامات مكتبات الإعلانات (ميتا + جوجل/يوتيوب + تيك توك + لينكدإن)
   // — ADS_LIBRARY بياخد مقعد مضمون في الموجة لو في منافسين، وكل نتيجة = AD_SPENDER تلقائيًا
   let adPoach: string[] = []
+  const competitorAdEvidence: Array<{ name: string; site: string; channels: string[] }> = []
   try {
     const comps = await db.competitor.findMany({
       where: { competitor: { workspaceId: wsId } },
-      include: { competitor: { select: { name: true } } },
+      include: { competitor: { select: { name: true, websiteUrl: true, id: true } } },
       take: 4,
     })
     const names = [...new Set(comps.map((c) => c.competitor?.name?.trim()).filter(Boolean))] as string[]
@@ -146,6 +147,23 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       queries = [...poach, ...queries]
       adPoach = competitorAdQueries(names)
       if (adPoach.length && !sourceTypes.includes("ADS_LIBRARY")) sourceTypes.push("ADS_LIBRARY")
+      // ═══ استطلاع المنافسين مباشرة: ماسح البيكسلات على مواقعهم ═══
+      // قنوات إعلانات المنافس الحية = خريطة رسالته وميزانيته — بتتحفظ في Competitor.evidence
+      for (const c of comps.slice(0, 4)) {
+        const comp = c.competitor
+        if (!comp?.websiteUrl) continue
+        const channels = await detectAdPixels(comp.websiteUrl).catch(() => [] as string[])
+        if (channels.length) {
+          competitorAdEvidence.push({ name: comp.name, site: comp.websiteUrl, channels })
+          await db.competitor.updateMany({
+            where: { competitorId: comp.id },
+            data: { evidence: { ...(typeof c.evidence === "object" && c.evidence ? c.evidence : {}), adChannels: channels, adChannelsCheckedAt: new Date().toISOString(), adEvidence: "pixel_scan" } },
+          }).catch(() => undefined)
+        }
+      }
+      if (competitorAdEvidence.length) {
+        console.log(`[ads-poach] 🎯 إعلانات منافسين حية: ${competitorAdEvidence.map((e) => `${e.name} (${e.channels.join("+")})`).join(" | ")}`)
+      }
     }
   } catch { /* بدون منافسين — البحث العادي */ }
 
@@ -240,7 +258,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
         startedAt: new Date(Date.now() - 60000),
         completedAt: new Date(),
         resultCount: items.length,
-        metadata: { adaptersUsed, plan: plan.queries, queriesByType, selectedBy, aiSmithTarget, byType, skills: skillsUsed },
+        metadata: { adaptersUsed, plan: plan.queries, queriesByType, selectedBy, aiSmithTarget, byType, skills: skillsUsed, ...(competitorAdEvidence.length ? { competitorAdChannels: competitorAdEvidence } : {}) },
       },
     })
     await db.source.update({ where: { id: source.id }, data: { lastRunAt: new Date(), lastError: null } })
@@ -248,13 +266,13 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
 
   const ingest = source
     ? await ingestDiscoveredItems(wsId, source, rule, ingestable, deadline)
-    : { created: 0, duplicates: 0, leadsByPlatform: {} as Record<string, number> }
+    : { created: 0, duplicates: 0, adPixelLeads: 0, leadsByPlatform: {} as Record<string, number> }
   // مهارات جابت عناصر من غير ليدز = هدم أخف (الليدز اتكافأت جوه الابتلاع)
   for (const st of sourceTypes) {
     if (!ingest.leadsByPlatform[st] && byType[st]) await recordSkillNoLeads(wsId, st).catch(() => undefined)
   }
   const took = ((Date.now() - jobStart) / 1000).toFixed(0)
-  return `discovered=${items.length} ingested=${ingestable.length} leadsCreated=${ingest.created} duplicates=${ingest.duplicates} took=${took}s adapters=${adaptersUsed.join(",") || "none"}`
+  return `discovered=${items.length} ingested=${ingestable.length} leadsCreated=${ingest.created} duplicates=${ingest.duplicates} adPixelLeads=${ingest.adPixelLeads}${competitorAdEvidence.length ? ` competitorsAds=[${competitorAdEvidence.map((e) => `${e.name}:${e.channels.join("+")}`).join("; ")}]` : ""} took=${took}s adapters=${adaptersUsed.join(",") || "none"}`
 }
 
 export interface IngestRuleLite {
@@ -337,9 +355,12 @@ export async function ingestDiscoveredItems(
   rule: IngestRuleLite | null,
   items: DiscoveredItem[],
   deadline = Number.MAX_SAFE_INTEGER,
-): Promise<{ created: number; duplicates: number; leadsByPlatform: Record<string, number> }> {
+): Promise<{ created: number; duplicates: number; adPixelLeads: number; leadsByPlatform: Record<string, number> }> {
   let leadsCreated = 0
   let duplicates = 0
+  let adPixelLeads = 0 // ليدز اتأكد إنها بتصرف إعلانات (بصمة بيكسل حية على موقعها)
+  let pixelScans = 0 // ميزانية الفحص في الجوبة — الفحص بياخد ~2-6s
+  const PIXEL_SCAN_BUDGET = 5
   const leadsByPlatform: Record<string, number> = {}
   for (const item of items) {
     if (Date.now() > deadline) break // ميزانية وقت — الباقي بياخده الجوب الجاي
@@ -360,7 +381,9 @@ export async function ingestDiscoveredItems(
     if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية|كاشير|cashier|شيف|chef|كابتن|مطبخ|كهربائي|فني/i.test(title)) continue
     // ═══ مكتبات الإعلانات: صفحات المساعدة/المقالات/السياسات مش معلنين ═══
     // العنصر لازم يكون صفحة إعلان فعلي أو صفحة معلن — إلا يترفض (كان بيتسرب محتوى تعليمي زي ads.tiktok.com/resources)
-    if (itemPlatform === "ADS_LIBRARY") {
+    // الإعلانات الممولة المسرقة من SERP (sponsored) مستثنية — رابط هبوطها دومين المعلن نفسه مش المكتبة
+    const isSponsored = (item.rawData as { sponsored?: boolean } | null)?.sponsored === true
+    if (itemPlatform === "ADS_LIBRARY" && !isSponsored) {
       const u = item.url.toLowerCase()
       const realAd =
         (/facebook\.com\/ads\/library/.test(u) && /[?&]id=/.test(u)) || // إعلان ميتا فعلي بمعرّف
@@ -370,8 +393,11 @@ export async function ingestDiscoveredItems(
       if (!realAd) continue
     }
     // تصنيف إشارة النية (أولوية الصياد): صاحب الحاجة الصريحة → اللي بيقارن بالمنافسين → اللي بيصرف إعلانات → قوائم السوق
+    // ═══ الإعلانات الممولة من كل المصادر (طلب: العملاء من إعلانات المنافسين الممولة) ═══
+    // أي عنصر ببصمة sponsored من Serper ads = معلن بيصرف فلوس على جوجل الآن — AD_SPENDER تلقائيًا
+    // مهما كانت المنصة اللي جابه منها (فيسبوك/انستجرام/ويب/مكتبات الإعلانات...) — أعلى قدرة دفع.
     const hay = `${item.title ?? ""} ${item.body}`
-    const intentSignal: string | null = itemPlatform === "ADS_LIBRARY"
+    const intentSignal: string | null = itemPlatform === "ADS_LIBRARY" || isSponsored
       ? "AD_SPENDER"
       : isListingBusiness
         ? "MARKET_LIST"
@@ -422,6 +448,13 @@ export async function ingestDiscoveredItems(
       if (classification.intent === "NONE") classification.intent = "LOW"
       classification.score = Math.max(classification.score, 45)
       classification.reason = classification.reason || "بيزنس حقيقي من خرائط جوجل (قائمة استهداف)"
+    }
+    if (!classification.is_lead && isSponsored) {
+      // معلن ممول في نفس النيش — بيصرف على إعلانات الآن (AD_SPENDER): أقوى قائمة استهداف — عنده ميزانية ومقتنع بالتسويق
+      classification.is_lead = true
+      if (classification.intent === "NONE" || classification.intent === "LOW") classification.intent = "HIGH"
+      classification.score = Math.max(classification.score, 55)
+      classification.reason = classification.reason || `معلن ممول ${((item.rawData as { advertiser?: string })?.advertiser ?? "").slice(0, 40)} — بيصرف إعلانات في نفس النيش`
     }
     if (!classification.is_lead) continue
 
@@ -509,6 +542,32 @@ export async function ingestDiscoveredItems(
       await db.lead.update({ where: { id: lead.id }, data: { score: { increment: intentSignal === "EXPLICIT_NEED" ? 8 : 5 } } }).catch(() => undefined)
     }
 
+    // ═══ ماسح البصمات الإعلانية (طبقة سرقة الإعلانات من كل المصادر) ═══
+    // أي ليد له موقع بيتفحص بيكسلات الإعلانات الحية (ميتا/جوجل/تيك توك/لينكدإن/سناب/إكس)
+    // — بيكسل حي = بيصرف فلوس على إعلانات الآن → AD_SPENDER بقنوات مُثبتة +8 سكور.
+    // (المصدر: إعلانات جوجل الممولة من SERP تحتاج رصيد Serper — الفحص ده الدليل البديل الدائم)
+    const sponsoredAdvertiser = (item.rawData as { advertiser?: string } | null)?.advertiser
+    const siteUrl = candidate.websiteUrl
+      ?? (sponsoredAdvertiser && /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(sponsoredAdvertiser) ? `https://${sponsoredAdvertiser}` : null)
+      ?? (/^https?:\/\//.test(item.url) && !/facebook\.com|instagram\.com|tiktok\.com|youtu|\.com\/|x\.com|twitter\.com|linkedin\.com|reddit\.com|t\.me|quora\.com|google\./i.test(item.url) && /\.(com|eg|net|org|io|co|shop|store)([\/\?]|$)/i.test(item.url) ? item.url : null)
+    if (siteUrl && pixelScans < PIXEL_SCAN_BUDGET) {
+      pixelScans++
+      const channels = await detectAdPixels(siteUrl).catch(() => [] as string[])
+      if (channels.length) {
+        adPixelLeads++
+        const upgradeTo = intentSignal === "EXPLICIT_NEED" || intentSignal === "COMPETITOR_ENGAGER" ? intentSignal : "AD_SPENDER"
+        await db.lead.update({
+          where: { id: lead.id },
+          data: {
+            intentSignal: upgradeTo,
+            score: { increment: 8 },
+            metadata: { platform: itemPlatform ?? null, intentSignal: upgradeTo, adChannels: channels, adEvidence: "pixel_scan", adSite: siteUrl.slice(0, 120), discoveredVia: source.name } as Prisma.InputJsonValue,
+            whyNow: `${classification.reason ?? ""} — بيتصرف إعلانات حاليًا عبر: ${channels.join(" + ")}`.slice(0, 240),
+          },
+        }).catch(() => undefined)
+      }
+    }
+
     // ═══ عقل المهارات: الليد ده جه من مهارة/استعلام معين — اتسجل في الإحصاء والدروس ═══
     // (من هنا التعلم بيحصل: المهارة اللي بتجيب ليدز وزنها بيزيد، والاستعلام الفايت بيرجع أولًا)
     const viaType = item.viaType ?? itemPlatform ?? null
@@ -539,7 +598,7 @@ export async function ingestDiscoveredItems(
     }
   }
 
-  return { created: leadsCreated, duplicates, leadsByPlatform }
+  return { created: leadsCreated, duplicates, adPixelLeads, leadsByPlatform }
 }
 
 async function processResearchJob(jobId: string): Promise<string> {
