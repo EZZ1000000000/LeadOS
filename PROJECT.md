@@ -169,3 +169,10 @@ VERCEL_TOKEN=$VERCEL_TOKEN bunx vercel env pull scripts/deploy/.env.prod.pull --
 | أسرار (أسماء + قيم) | `scripts/deploy/.tokens` (**متنشرش أبدًا**) |
 | دليل نبضة cron-job.org | `download/leados-free-pulse-setup.md` |
 | اختبارات الموجة الحية | `scripts/tmp/test-wave-fair.ts` / `run-16-live.ts` |
+
+### 坑11 — محركات SERP بعد موت Serper (سبتمبر 2026)
+- جوجل الجديد شفر اللينكات في `/goto?url=` (base64 مشفر ببروتوكول protobuf) — سكراب جوجل مباشر ميت خلاص
+- Bing من سيرفرات DC: (أ) bun/node fetch بيتعملهم TLS soft-block — صفحة فاضية b_no (ب) حتى لو عدى: بيحول لإيدج صيني بيتجاهل `site:` كله. الحل الوحيد شغال: **ZenRows→Bing عادي (1 كريدت)** + `mkt=en-US` إجباري
+- لينكات Bing ملفوفة في `/ck/a?u=a1<base64url>` — بتتفك بـ Buffer.from(slice(2),'base64url')
+- **Exa includeDomains هو محرك المنصات الأساسي**: بيحترم الدومينات بنيويًا ويرجع نتايج مصر حقيقية — استخرج site: من الاستعلام ومررها
+- وقت الـtick: جوبة واحدة 75ث (بحث 35ث + ابتلاع) — جوبتين = timeout 120ث
