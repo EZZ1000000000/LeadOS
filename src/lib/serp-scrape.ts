@@ -213,9 +213,11 @@ export async function searchBingViaZenrows(query: string, limit = 10): Promise<S
   if (!alive.length) throw new Error("zenrows كل المفاتيح في تبريد")
 
   const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(toBingQuery(query))}&count=${Math.max(limit, 10)}&mkt=en-US`
+  const zrDeadline = Date.now() + 22_000 // سقف إجمالي للاستعلام الواحد مهما عدد المفاتيح — الـtick ليه ميزانية
   let lastErr: unknown = new Error("zenrows: no attempts")
 
   for (let i = 0; i < alive.length; i++) {
+    if (Date.now() > zrDeadline) break
     const key = alive[(zrCursor + i) % alive.length]
     try {
       const html = await zenrowsFetch(key, bingUrl, ZR_TIMEOUT)

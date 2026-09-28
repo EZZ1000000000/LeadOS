@@ -293,7 +293,7 @@ function googleTimeFilter(recencyDays: number): string | undefined {
   return undefined
 }
 
-async function fetchJson(url: string, init: RequestInit, timeoutMs = 15000): Promise<unknown> {
+async function fetchJson(url: string, init: RequestInit, timeoutMs = 9000): Promise<unknown> {
   const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

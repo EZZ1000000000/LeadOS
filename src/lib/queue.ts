@@ -18,7 +18,8 @@ import { graphPlatformPriorities } from "@/lib/skills/graph"
 import { harvestGitSkills } from "@/lib/skills/gitskills"
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 /** ميزانية وقت الجوبة الواحدة — لازم تخلص قبل maxDuration=120 بتاع الـtick */
-const DISCOVERY_TIME_BUDGET_MS = 110_000
+// (كانت 110ث — الجوبة الواحدة بتاكل العنب والجوبة التانية كانت بيموت نصها في الـtimeout)
+const DISCOVERY_TIME_BUDGET_MS = 75_000
 
 export async function enqueueJob(
   workspaceId: string,
@@ -777,11 +778,11 @@ export async function processTick(
   }
 
   // 2) Process queued jobs — واحد واحد مع ميزانية وقت إجمالية:
-  // الـtick ليه maxDuration=120s — لو جوب أكل الوقت، متبدأش جوب تاني يموت نصه
+  // الـtick ليه maxDuration=120s — الجوبة الواحدة ممكن تاكل 75ث؛ الجوبة التانية متبدأش إلا لو لسه بدري جدًا
   const tickStart = Date.now()
   let processed = 0
   for (let i = 0; i < maxJobs; i++) {
-    if (i > 0 && Date.now() - tickStart > DISCOVERY_TIME_BUDGET_MS - 30_000) {
+    if (i > 0 && Date.now() - tickStart > 35_000) {
       details.push(`tick time budget: وقفنا بعد ${i} جوب — الباقي النبضة الجاية`)
       break
     }
