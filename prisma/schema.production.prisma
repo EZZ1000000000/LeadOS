@@ -382,6 +382,7 @@ enum JobType {
   CLEANUP
   REACTIVATION
   SOURCE_EVALUATION
+  GIT_SKILLS_HARVEST
 }
 
 enum JobStatus {

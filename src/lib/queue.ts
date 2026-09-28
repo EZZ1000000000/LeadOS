@@ -15,7 +15,6 @@ import { skillStatsSnapshot, recordSkillRun, recordSkillResults, recordSkillDryR
 import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
 import { graphPlatformPriorities } from "@/lib/skills/graph"
 import { harvestGitSkills } from "@/lib/skills/gitskills"
-
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 /** ميزانية وقت الجوبة الواحدة — لازم تخلص قبل maxDuration=120 بتاع الـtick */
 const DISCOVERY_TIME_BUDGET_MS = 110_000
@@ -556,6 +555,12 @@ async function processSourceEvaluationJob(jobId: string): Promise<string> {
   return summary.slice(0, 200)
 }
 
+/** حصاد GitSkills (3.8M مهارة): جوب مستقل كل 4 ساعات — ميزانية زمن داخلية 30s */
+async function processGitSkillsHarvestJob(): Promise<string> {
+  const h = await harvestGitSkills()
+  return `added=${h.added} checked=${h.checked} skipped=${h.skipped} — ${h.note}`
+}
+
 /** Main tick: create scheduled discovery jobs from rules, then process a batch. */
 export async function processTick(
   maxJobs = 6,
@@ -646,6 +651,7 @@ export async function processTick(
       else if (job.type === "DEEP_RESEARCH") result = await processResearchJob(job.id)
       else if (job.type === "REACTIVATION") result = await processReactivationJob(job.id)
       else if (job.type === "SOURCE_EVALUATION") result = await processSourceEvaluationJob(job.id)
+      else if (job.type === "GIT_SKILLS_HARVEST") result = await processGitSkillsHarvestJob()
       else result = `no handler for type ${job.type}`
       await db.job.update({
         where: { id: job.id },
@@ -705,14 +711,19 @@ export async function processTick(
     details.push("SOURCE_EVALUATION scheduled")
   }
 
-  // 6) حصاد GitSkills (دمج قاعدة 3.8M مهارة): مقيد بـ4 ساعات + ميزانية زمن صارمة
-  // — بيحصل بعد الجوبات عشان لو الحصاد اتبطّأ ميمسّحش النبضة. فشله صامت تمامًا.
-  try {
-    if (Date.now() - tickStart < DISCOVERY_TIME_BUDGET_MS - 40_000) {
-      const h = await harvestGitSkills()
-      if (h.added) details.push(`GIT_SKILLS: ${h.note}`)
+  // 6) حصاد GitSkills (دمج قاعدة 3.8M مهارة): جوب مجدول كل 4 ساعات — بيتعالج في نبضة فاضية
+  // (كجوب بياخد ميزانيته الخاصة — مش بيموت لو النبضة زحمة)
+  const lastHarvest = await db.job.findFirst({
+    where: { type: "GIT_SKILLS_HARVEST", createdAt: { gte: new Date(Date.now() - 4 * 3600_000) } },
+    select: { id: true },
+  })
+  if (!lastHarvest) {
+    const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 1 })
+    if (wsIds.length) {
+      await enqueueJob(wsIds[0].id, "GIT_SKILLS_HARVEST", {}, 15, new Date(Date.now() + 90_000))
+      details.push("GIT_SKILLS_HARVEST scheduled")
     }
-  } catch { /* الحصاد best-effort */ }
+  }
 
   return { processed, details, scheduledRules }
 }
