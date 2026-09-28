@@ -997,7 +997,7 @@ export async function runDiscovery(
   sourceTypes: string[],
   queries: string[],
   limitPerQuery = 5,
-  opts?: { maxSearches?: number; passes?: number; queriesByType?: Record<string, string[]> },
+  opts?: { maxSearches?: number; passes?: number; queriesByType?: Record<string, string[]>; deadline?: number },
 ): Promise<{ items: DiscoveredItem[]; adaptersUsed: string[] }> {
   const adaptersUsed: string[] = []
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
@@ -1026,8 +1026,10 @@ export async function runDiscovery(
   const FREE = FREE_SOURCE_TYPES as readonly string[]
   const passes = Math.min(opts?.passes ?? 4, Math.max(1, queries.length))
   for (let pass = 0; pass < passes; pass++) {
+    if (opts?.deadline && pass > 0 && Date.now() > opts.deadline) break // ميزانية وقت — البحث العميق بياخد وقت
     for (const st of types) {
       if (searches >= maxSearches || collected() >= totalCap) break
+      if (opts?.deadline && Date.now() > opts.deadline) break // سيب الباقي للجوب الجاي
       if (pass > 0 && FREE.includes(st)) continue // المجاني جولة واحدة تكفيه — الدوران تاني بيضيع وقته
       const q = queries[pass]
       if (!q) continue

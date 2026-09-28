@@ -15,6 +15,8 @@ import { skillStatsSnapshot, recordSkillRun, recordSkillResults, recordSkillDryR
 import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
 
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
+/** ميزانية وقت الجوبة الواحدة — لازم تخلص قبل maxDuration=120 بتاع الـtick */
+const DISCOVERY_TIME_BUDGET_MS = 110_000
 
 export async function enqueueJob(
   workspaceId: string,
@@ -58,8 +60,13 @@ interface DiscoveryPayload {
   fullSweep?: boolean // مسح شامل: كل المنصات في جوبة واحدة — لبذر الـ16 مصدر فورًا
 }
 
-/** Process one DISCOVERY job: search → normalize → dedup → classify → score → maybe research. */
+/** Process one DISCOVERY job: search → normalize → dedup → classify → score → maybe research.
+ * ميزانية وقت: الـtick ليه maxDuration=120s على Vercel — الجوب اللي يعديها بيتقتل نص شغل
+ * ويرجع RUNNING معلق للأبد (كان بيحصل مع المسح الشامل + تصنيف AI). الدايدلاين بيخلي
+ * الجوب يقفل نفسه بنجاح جزئي — والباقي بياخده الجوب الجاي (الديديب بيوفر التكرار). */
 async function processDiscoveryJob(jobId: string): Promise<string> {
+  const jobStart = Date.now()
+  const deadline = jobStart + (DISCOVERY_TIME_BUDGET_MS - 20_000) // احتفظ 20s للإقفال والتسجيل
   const job = await db.job.findUnique({ where: { id: jobId } })
   if (!job) return "job missing"
   const wsId = job.workspaceId
@@ -135,8 +142,14 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     sourceTypes,
     queries,
     payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
-    payload.fullSweep ? { maxSearches: 18, passes: 1, queriesByType } : { queriesByType },
+    payload.fullSweep
+      ? { maxSearches: 18, passes: 1, queriesByType, deadline }
+      : { queriesByType, deadline },
   )
+  const timeLeft = deadline - Date.now()
+  // الابتلاع ضمن الميزانية كمان — التصنيف AI بياخد ~3s للعنصر
+  const ingestable = timeLeft > 15_000 ? items : timeLeft > 0 ? items.slice(0, 6) : []
+  if (ingestable.length < items.length) console.log(`[discovery] time budget: ingesting ${ingestable.length}/${items.length} — الباقي جوبات جاية`)
 
   // ═══ تغذية التعلم: نتايج كل مهارة (الليدز بتتحسب في الابتلاع — هون العناصر بس) ═══
   const byType: Record<string, number> = {}
@@ -167,13 +180,14 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
   }
 
   const ingest = source
-    ? await ingestDiscoveredItems(wsId, source, rule, items)
+    ? await ingestDiscoveredItems(wsId, source, rule, ingestable, deadline)
     : { created: 0, duplicates: 0, leadsByPlatform: {} as Record<string, number> }
   // مهارات جابت عناصر من غير ليدز = هدم أخف (الليدز اتكافأت جوه الابتلاع)
   for (const st of sourceTypes) {
     if (!ingest.leadsByPlatform[st] && byType[st]) await recordSkillNoLeads(wsId, st).catch(() => undefined)
   }
-  return `discovered=${items.length} leadsCreated=${ingest.created} duplicates=${ingest.duplicates} adapters=${adaptersUsed.join(",") || "none"}`
+  const took = ((Date.now() - jobStart) / 1000).toFixed(0)
+  return `discovered=${items.length} ingested=${ingestable.length} leadsCreated=${ingest.created} duplicates=${ingest.duplicates} took=${took}s adapters=${adaptersUsed.join(",") || "none"}`
 }
 
 export interface IngestRuleLite {
@@ -255,11 +269,13 @@ export async function ingestDiscoveredItems(
   source: { id: string; type: string; name: string },
   rule: IngestRuleLite | null,
   items: DiscoveredItem[],
+  deadline = Number.MAX_SAFE_INTEGER,
 ): Promise<{ created: number; duplicates: number; leadsByPlatform: Record<string, number> }> {
   let leadsCreated = 0
   let duplicates = 0
   const leadsByPlatform: Record<string, number> = {}
   for (const item of items) {
+    if (Date.now() > deadline) break // ميزانية وقت — الباقي بياخده الجوب الجاي
     // Quality guard: skip hashtag-only titles / empty-ish names (social noise, not businesses)
     const title = cleanName(item.title ?? "")
     if (!title || title.length < 5 || title.split(/\s+/).every((w) => w.startsWith("#"))) continue
@@ -593,10 +609,18 @@ export async function processTick(
     if (scheduledRules >= 3) break
   }
 
-  // 2) Process queued jobs
-  const jobs = await claimJobs(maxJobs)
+  // 2) Process queued jobs — واحد واحد مع ميزانية وقت إجمالية:
+  // الـtick ليه maxDuration=120s — لو جوب أكل الوقت، متبدأش جوب تاني يموت نصه
+  const tickStart = Date.now()
   const details: string[] = []
-  for (const job of jobs) {
+  for (let i = 0; i < maxJobs; i++) {
+    if (i > 0 && Date.now() - tickStart > DISCOVERY_TIME_BUDGET_MS - 30_000) {
+      details.push(`tick time budget: وقفنا بعد ${i} جوب — الباقي النبضة الجاية`)
+      break
+    }
+    const jobs = await claimJobs(1)
+    if (!jobs.length) break
+    const job = jobs[0]
     try {
       let result = ""
       if (job.type === "DISCOVERY") result = await processDiscoveryJob(job.id)
