@@ -549,7 +549,8 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   // الموجة الجديدة: أعلى نية شراء بأقل خطر حظر (طلبات 24/25)
   // ═══ مكتبات الإعلانات من كل المنصات (طلب: العملاء من إعلانات المنافسين الممولة من كل المصادر) ═══
   // ميتا (فيسبوك+انستجرام) + جوجل/يوتيوب (مركز شفافية الإعلانات) + تيك توك (المحتوى التجاري) + لينكدإن (Ad Library)
-  ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads", "adstransparency.google.com", "ads.tiktok.com", "linkedin.com/ad-library"],
+  // ملحوظة دقة: «facebook.com/ads» الواسع اتشال — كان بيلقط صفحات عادية اسمها /ads.xxx (زي ads.egypt) مش المكتبة
+  ADS_LIBRARY: ["facebook.com/ads/library", "adstransparency.google.com", "ads.tiktok.com", "linkedin.com/ad-library"],
   REVIEWS: ["google.com/maps", "tripadvisor.com", "elmenus.com"],
   EVENTS: ["facebook.com/events", "egyta.com", "cairoict.com", "egyfoodexpo.com", "eventbrite.com", "egyevent.com", "cafex-me.com"],
   QUORA: ["quora.com", "ar.quora.com"],
