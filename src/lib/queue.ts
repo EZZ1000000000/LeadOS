@@ -358,6 +358,17 @@ export async function ingestDiscoveredItems(
     const isListingBusiness = isMapsBusiness || itemPlatform === "DIRECTORY" || itemPlatform === "REVIEWS"
     // (كاشير/شيف/مطبخ اتضافوا: مطعم بيظبط طاقمه = عميل POS/أنظمة مثالي)
     if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية|كاشير|cashier|شيف|chef|كابتن|مطبخ|كهربائي|فني/i.test(title)) continue
+    // ═══ مكتبات الإعلانات: صفحات المساعدة/المقالات/السياسات مش معلنين ═══
+    // العنصر لازم يكون صفحة إعلان فعلي أو صفحة معلن — إلا يترفض (كان بيتسرب محتوى تعليمي زي ads.tiktok.com/resources)
+    if (itemPlatform === "ADS_LIBRARY") {
+      const u = item.url.toLowerCase()
+      const realAd =
+        (/facebook\.com\/ads\/library/.test(u) && /[?&]id=/.test(u)) || // إعلان ميتا فعلي بمعرّف
+        (/adstransparency\.google\.com/.test(u) && !/\/(about|faq|help|support)/.test(u)) || // إعلان جوجل/يوتيوب محدد
+        (/ads\.tiktok\.com/.test(u) && !/\/(resources|help|business|creativecenter|policies)/.test(u)) || // إعلان تيك توك
+        (/linkedin\.com\/ad-library/.test(u) && /advertiser/.test(u)) // صفحة معلن لينكدإن
+      if (!realAd) continue
+    }
     // تصنيف إشارة النية (أولوية الصياد): صاحب الحاجة الصريحة → اللي بيقارن بالمنافسين → اللي بيصرف إعلانات → قوائم السوق
     const hay = `${item.title ?? ""} ${item.body}`
     const intentSignal: string | null = itemPlatform === "ADS_LIBRARY"
