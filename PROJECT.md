@@ -28,11 +28,20 @@
 **عقل المهارات (اتضاف 2026-09-28 — طلب «بحث أذكى بـ AI يتعلم + نظام Skills»):**
 - **مكتبة مهارات بصيغة SKILL.md** (متوافقة Anthropic Agent Skills — أي skill من جيت هاب يتحط فولدر ويشتغل): `skills/discovery/<dir>/SKILL.md` ×19 (16 منصة + خرايط + ويب). الملفات بتتجمع في الباندل بـ`bun run skills:gen` (بيشتغل في كل build) → `src/lib/skills/manifest.generated.ts`.
 - **التعلم**: كل ليد بيرفع وزن منصته في `SkillStat` (ريكورد `recordSkillLead`) + الاستعلام الفايت بيتحفظ درس في `SkillLesson` — الدروس بتنادى **الأول** في كل جوب. جوب جاف = هدم وزن (-0.08/-0.03) — المنصات الصامية بتنام.
-- **المنتقي**: الموجة الدوارة بتترتب بالأوزان المتعلمة (`expandSourceTypes({weighted})`) + إعادة ترتيب AI كل 30 دقيقة (`aiSelectPlatforms` — بتقرا كتالوج المهارات + أرقام الأداء).
+- **المنتقي**: الموجة الدوارة بتترتب بدمج (40% وزن متعلم + 60% **جراف skill-map**) + إعادة ترتيب AI كل 30 دقيقة (`aiSelectPlatforms` — بتقرا كتالوج المهارات + أرقام الأداء). `selectedBy` في ميتاداتا الجوب بيقول: `skill-graph` ولا `ai-selector`.
 - **حدّاد الاستعلامات**: منصة دوّارة كل جوب بتاخد 3 استعلامات AI جديدة للنيش (`freshAiQueries` — كوتة: منصة/24س + 10د/instance) — بتتحفظ دروس `source=ai`.
-- **فلتر نشر لكل منصة**: كورا/ديسكورد 90 يوم، معارض 75، أدلة/تقييمات 60، إعلانات/سوق 30 — (الـ14 يوم كان بيقتلهم).
-- **تسجيل النداءات**: `AiProvider` enum فيه DAHL/NVIDIA — بدونهم الـAiRun بيسقط بصمت.
-- **نظافة الطابور**: قاعدة ليها جوب حي (QUEUED/RUNNING) متزرعش تاني — قفل تضخم الطابور. + إحياء RUNNING العالقة >20 دقيقة.
+
+**دمج GitSkills (اتضاف 2026-09-28 — «مشروع الملايين الاسكلز»):**
+- **المصدر**: داتابيز GitSkills (MSR'27) — **3,797,117 ملف SKILL.md** من 282,200 repo (Anthropic Agent Skills spec) على HuggingFace: `mvaccargiu/gitskills`. وصول REST بلا استضافة ولا فهرس: `datasets-server/rows` بعينات عشوائية موازية (8×100) + `search` موجّه لو الفهرس سخن.
+- **الحصّاد** (`src/lib/skills/gitskills.ts`): تسجيل صلة بحدود كلمات صارمة (`\bsales\b` مش wholesale — 13 وسم: lead-gen/outreach/sales/marketing/seo/social/crm/platform/local-biz/funnel...) — عتبة 24 نقطة، أعلى 12 لكل حصاد، ميزانية 30s، **جوب `GIT_SKILLS_HARVEST` كل 4 ساعات في بداية النبضة (0.7)** (لو اتأجل لآخر النبضة أولوية discovery بتاكله). التخزين في جدول `GitSkill` عالمي مشترك (repo+path unique).
+- **التكتيكات في المنتقي**: `gitSkillsTactics(platform, niche)` بتحدد أفضل ما ات حصد للمنصة/النيش — سطور `[GitSkills] name: desc` بتدخل برومبتات `freshAiQueries` و`aiSelectPlatforms` — والاستخدام/الليدز بيتسجلوا على التكتيك نفسه (`useCount/leadCount/weight`).
+- **خريطة المهارات skill-map** (`src/lib/skills/graph.ts`): جراف حتمي من الاستخدام الحقيقي — عقد: منصات (SKILL.md×19) + تكتيكات GitSkills — وصلات: `tactic` (وسوم GitSkill→منصة)، `couse` (منصات اشتغلوا نفس الجوب من metadata آخر 7 أيام)، أوزان من SkillStat. `graphPlatformPriorities(wsId, niche)` = وزن × تكتيك × شركاء منتجين × صلة نيش — **بيشتغل كل نبضة حتى من غير AI**. معروض في `/api/skills` (graph.nodes/links) وكارت المهارات (SVG مصغر).
+- **حق الجعان**: `expandSourceTypes({starved})` — 3 مقاعد للأقوى وزنًا + **مقعد مضمون لمصدر صفر ليدز** — الاستكشاف مابيقفش والأوزان ما تخنقش المنصات الصامية.
+- **إصلاح قديم**: `processTick` كان بيرجع `jobs.length` (خارج نطاقها — ReferenceError صامت بعد ما الشغل يخلص) → عدّاد `processed` سليم.
+
+**فلتر نشر لكل منصة**: كورا/ديسكورد 90 يوم، معارض 75، أدلة/تقييمات 60، إعلانات/سوق 30 — (الـ14 يوم كان بيقتلهم).
+**تسجيل النداءات**: `AiProvider` enum فيه DAHL/NVIDIA — بدونهم الـAiRun بيسقط بصمت.
+**نظافة الطابور**: قاعدة ليها جوب حي (QUEUED/RUNNING) متزرعش تاني — قفل تضخم الطابور. + إحياء RUNNING العالقة >20 دقيقة.
 
 | المنصة | المواقع | بيجيب إيه | ميكانيزم |
 |---|---|---|---|
