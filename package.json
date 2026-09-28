@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "bun run scripts/backup-db.ts --startup || true; next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && node scripts/copy-standalone-assets.js",
-    "vercel-build": "prisma generate --schema=prisma/schema.production.prisma && next build",
+    "skills:gen": "bun run scripts/gen-skills-manifest.ts",
+    "vercel-build": "bun run skills:gen && prisma generate --schema=prisma/schema.production.prisma && next build",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "seed": "bun run scripts/seed.ts",

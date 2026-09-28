@@ -10,7 +10,9 @@ import { findDuplicateLead, normalizePhone } from "@/lib/dedup"
 import { recomputeLeadScore } from "@/lib/scoring"
 import { runDeepResearch } from "@/lib/research"
 import { enrollLead, processDueEnrollments, reactivationSweep } from "@/lib/sequences"
-import { PLATFORM_SITES } from "@/lib/discovery"
+import { PLATFORM_SITES, PLATFORM_QUERY_SHAPES } from "@/lib/discovery"
+import { skillStatsSnapshot, recordSkillRun, recordSkillResults, recordSkillDryRun, recordSkillNoLeads, recordSkillLead, recordLesson } from "@/lib/skills/learning"
+import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
 
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 
@@ -73,8 +75,25 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
 
   // موجة المنصات الكاملة: الأنواع المسجلة + دوران بالساعة على باقي المنصات المبنية (شغّل باقي المصادر)
   // fullSweep: كل المنصات مرة واحدة — بذرة فورية للـ16 مصدر
+  // ═══ عقل المهارات (doc §3) ═══
+  // 1) أوزان متعلمة من السوق الحقيقي: مين بيجيب ليدز فعلًا للورشة دي
+  // 2) إعادة ترتيب بالـAI (تكتوم 30 دقيقة) — «العقل اللي بيختار الاسكل المناسب للنيش»
   const declared = payload.sourceTypes ?? asArray(rule?.sourceTypes)
-  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep) })
+  const niche = (plan.queries[0] ?? "عملاء في مصر").trim()
+  const stats = await skillStatsSnapshot(wsId).catch(() => ({} as Record<string, { leads: number; runs: number; weight: number }>))
+  const weighted: Record<string, number> = Object.fromEntries(Object.entries(stats).map(([p, s]) => [p, s.weight]))
+  let selectedBy = "learned-weights"
+  try {
+    const free = ["REDDIT", "TELEGRAM", "RSS"]
+    const declaredSet = new Set(declared.filter(Boolean))
+    const candidates = Object.keys(PLATFORM_SITES).filter((t) => !declaredSet.has(t) && !free.includes(t))
+    const picks = await aiSelectPlatforms(wsId, niche, candidates, 4, stats)
+    if (picks?.length) {
+      for (const [i, p] of picks.entries()) weighted[p] = Math.max(weighted[p] ?? 1, 5 - i)
+      selectedBy = "ai-selector"
+    }
+  } catch { /* الـAI وقع — الأوزان المتعلمة تكفي */ }
+  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted })
   // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
   // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
   let queries = plan.queries
@@ -90,12 +109,42 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       queries = [...poach, ...queries]
     }
   } catch { /* بدون منافسين — البحث العادي */ }
+
+  // ═══ ذاكرة الاستعلامات + حدّاد AI ═══
+  // كل منصة بتاخد استعلاماتها المتعلمة (دروس جابت ليدز قبل كده) فوق الأشكال الثابتة
+  // + منصة واحدة كل جوب (دوّارة بالساعة) بتاخد استعلامات AI جديدة للنيش — بتحفظ دروس
+  await recordSkillRun(wsId, sourceTypes).catch(() => undefined)
+  const queriesByType: Record<string, string[]> = {}
+  for (const st of sourceTypes) {
+    if (st === "GOOGLE_MAPS" || PLATFORM_QUERY_SHAPES[st]) {
+      queriesByType[st] = await queriesForPlatform(wsId, st, niche).catch(() => [] as string[])
+    }
+  }
+  let aiSmithTarget: string | null = null
+  const smithPool = sourceTypes.filter((t) => PLATFORM_QUERY_SHAPES[t])
+  if (smithPool.length) {
+    const hour = Math.floor(Date.now() / 3_600_000)
+    aiSmithTarget = smithPool[hour % smithPool.length]
+    const fresh = await freshAiQueries(wsId, niche, aiSmithTarget).catch(() => null)
+    if (fresh?.length) {
+      queriesByType[aiSmithTarget] = [...new Set([...fresh, ...(queriesByType[aiSmithTarget] ?? [])])].slice(0, 5)
+    }
+  }
+
   const { items, adaptersUsed } = await runDiscovery(
     sourceTypes,
     queries,
     payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
-    payload.fullSweep ? { maxSearches: 18, passes: 1 } : undefined,
+    payload.fullSweep ? { maxSearches: 18, passes: 1, queriesByType } : { queriesByType },
   )
+
+  // ═══ تغذية التعلم: نتايج كل مهارة (الليدز بتتحسب في الابتلاع — هون العناصر بس) ═══
+  const byType: Record<string, number> = {}
+  for (const it of items) if (it.viaType) byType[it.viaType] = (byType[it.viaType] ?? 0) + 1
+  await recordSkillResults(wsId, byType).catch(() => undefined)
+  for (const st of sourceTypes) {
+    if (!byType[st]) await recordSkillDryRun(wsId, st).catch(() => undefined)
+  }
 
   // Persist a SearchJob record for observability
   const source = payload.sourceId
@@ -111,16 +160,20 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
         startedAt: new Date(Date.now() - 60000),
         completedAt: new Date(),
         resultCount: items.length,
-        metadata: { adaptersUsed, plan: plan.queries },
+        metadata: { adaptersUsed, plan: plan.queries, queriesByType, selectedBy, aiSmithTarget, byType },
       },
     })
     await db.source.update({ where: { id: source.id }, data: { lastRunAt: new Date(), lastError: null } })
   }
 
-  const { created, duplicates } = source
+  const ingest = source
     ? await ingestDiscoveredItems(wsId, source, rule, items)
-    : { created: 0, duplicates: 0 }
-  return `discovered=${items.length} leadsCreated=${created} duplicates=${duplicates} adapters=${adaptersUsed.join(",") || "none"}`
+    : { created: 0, duplicates: 0, leadsByPlatform: {} as Record<string, number> }
+  // مهارات جابت عناصر من غير ليدز = هدم أخف (الليدز اتكافأت جوه الابتلاع)
+  for (const st of sourceTypes) {
+    if (!ingest.leadsByPlatform[st] && byType[st]) await recordSkillNoLeads(wsId, st).catch(() => undefined)
+  }
+  return `discovered=${items.length} leadsCreated=${ingest.created} duplicates=${ingest.duplicates} adapters=${adaptersUsed.join(",") || "none"}`
 }
 
 export interface IngestRuleLite {
@@ -202,9 +255,10 @@ export async function ingestDiscoveredItems(
   source: { id: string; type: string; name: string },
   rule: IngestRuleLite | null,
   items: DiscoveredItem[],
-): Promise<{ created: number; duplicates: number }> {
+): Promise<{ created: number; duplicates: number; leadsByPlatform: Record<string, number> }> {
   let leadsCreated = 0
   let duplicates = 0
+  const leadsByPlatform: Record<string, number> = {}
   for (const item of items) {
     // Quality guard: skip hashtag-only titles / empty-ish names (social noise, not businesses)
     const title = cleanName(item.title ?? "")
@@ -219,7 +273,8 @@ export async function ingestDiscoveredItems(
     const isMapsBusiness = item.contentType === "BUSINESS" || itemPlatform === "GOOGLE_MAPS"
     // أدلة الأعمال + صفحات التقييمات = قوائم بيزنس حقيقية زي الخرايط بالظبط (اصلاح: كانوا بيرفضوا كليدز)
     const isListingBusiness = isMapsBusiness || itemPlatform === "DIRECTORY" || itemPlatform === "REVIEWS"
-    if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية/i.test(title)) continue
+    // (كاشير/شيف/مطبخ اتضافوا: مطعم بيظبط طاقمه = عميل POS/أنظمة مثالي)
+    if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية|كاشير|cashier|شيف|chef|كابتن|مطبخ|كهربائي|فني/i.test(title)) continue
     // تصنيف إشارة النية (أولوية الصياد): صاحب الحاجة الصريحة → اللي بيقارن بالمنافسين → اللي بيصرف إعلانات → قوائم السوق
     const hay = `${item.title ?? ""} ${item.body}`
     const intentSignal: string | null = itemPlatform === "ADS_LIBRARY"
@@ -360,6 +415,17 @@ export async function ingestDiscoveredItems(
       await db.lead.update({ where: { id: lead.id }, data: { score: { increment: intentSignal === "EXPLICIT_NEED" ? 8 : 5 } } }).catch(() => undefined)
     }
 
+    // ═══ عقل المهارات: الليد ده جه من مهارة/استعلام معين — اتسجل في الإحصاء والدروس ═══
+    // (من هنا التعلم بيحصل: المهارة اللي بتجيب ليدز وزنها بيزيد، والاستعلام الفايت بيرجع أولًا)
+    const viaType = item.viaType ?? itemPlatform ?? null
+    const viaQuery = item.viaQuery ?? null
+    if (viaType) {
+      const win = intentSignal === "EXPLICIT_NEED" || intentSignal === "COMPETITOR_ENGAGER" || classification.score >= 55
+      await recordSkillLead(wsId, viaType, { win, qualityScore: classification.score }).catch(() => undefined)
+      if (viaQuery) await recordLesson(wsId, viaType, viaQuery, { qualityScore: classification.score }).catch(() => undefined)
+      leadsByPlatform[viaType] = (leadsByPlatform[viaType] ?? 0) + 1
+    }
+
     // سلاسل المتابعة: تجنيد تلقائي للليد الجديد في سلسلة النشر (لو مفعّلة)
     // سياسة الرد-فقط: الخطوات بتطلع مهام بنص جاهز — مفيش إرسال آلي استباقي
     try {
@@ -379,7 +445,7 @@ export async function ingestDiscoveredItems(
     }
   }
 
-  return { created: leadsCreated, duplicates }
+  return { created: leadsCreated, duplicates, leadsByPlatform }
 }
 
 async function processResearchJob(jobId: string): Promise<string> {

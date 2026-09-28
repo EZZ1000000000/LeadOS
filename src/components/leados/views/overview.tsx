@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/hooks/use-toast"
 import { Flame, UserPlus, FlaskConical, Bell, CheckSquare, Radio, Flame as FlameIcon, Activity, Zap } from "lucide-react"
+import { SkillsBrainCard } from "./skills-card"
 
 interface OverviewData {
   kpis: { hotLeads: number; newLeads: number; runningResearch: number; unreadAlerts: number; dueTasks: number; activeSources: number; totalLeads: number; activeJobs: number }
@@ -68,6 +69,9 @@ export function OverviewView({ panel, onOpenLead, onGoTo }: { panel: string; onO
         <KpiCard title="إجمالي الـLeads" value={k.totalLeads} tone="border-teal-500/30 bg-teal-500/10" icon={<Activity className="h-5 w-5 text-teal-400" />} onClick={() => onGoTo("analytics")} />
         <KpiCard title="وظائف في الطابور" value={k.activeJobs} tone="border-indigo-500/30 bg-indigo-500/10" icon={<Zap className="h-5 w-5 text-indigo-400" />} onClick={() => onGoTo("research")} />
       </div>
+
+      {/* عقل المهارات — التعلم والانتقاء الحي */}
+      <SkillsBrainCard />
 
       <div className="grid gap-4 xl:grid-cols-3">
         {/* Top leads */}

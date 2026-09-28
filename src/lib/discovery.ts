@@ -17,6 +17,10 @@ export interface DiscoveredItem {
   contentType: string
   language: string
   rawData?: Prisma.InputJsonValue
+  // تتبع التعلم: أنهي مهارة (منصة) جابت العنصر ده + بأنهي استعلام — عشان
+  // SkillStat/SkillLesson يتغذوا بالنتايج الحقيقية (عقل المهارات — doc §3)
+  viaType?: string
+  viaQuery?: string
 }
 
 export interface SearchPlan {
@@ -545,9 +549,10 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   // الموجة الجديدة: أعلى نية شراء بأقل خطر حظر (طلبات 24/25)
   ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads"],
   REVIEWS: ["google.com/maps", "tripadvisor.com", "elmenus.com"],
-  EVENTS: ["facebook.com/events", "egyta.com", "cairoict.com", "egyfoodexpo.com"],
+  EVENTS: ["facebook.com/events", "egyta.com", "cairoict.com", "egyfoodexpo.com", "eventbrite.com", "egyevent.com", "cafex-me.com"],
   QUORA: ["quora.com", "ar.quora.com"],
-  DISCORD: ["discord.com", "discord.gg"],
+  // ديسكورد نفسه بيتفهرس ضعيف من جوجل — المجمّعات هي الباب: فيها سيرفرات عربية تجارية بوصف
+  DISCORD: ["discord.com", "discord.gg", "disboard.org", "discord.me", "top.gg", "discords.com"],
 }
 
 /** سقف أنواع البحث المدفوعة في الجوبة الواحدة — مصادر الـJSON المجانية مش محسوبة معاه */
@@ -644,10 +649,10 @@ export const FREE_SOURCE_TYPES = ["REDDIT", "TELEGRAM", "RSS"] as const
  * القاعدة في الداتابيز ممكن تكون متسجلة بـ3-4 أنواع بس — لكن المشروع مبني 16+ منصة.
  * الدالة دي بتوسّع الأنواع لكل نبضة:
  * 1) REDDIT/TELEGRAM دايمًا لو مش مستخدمين — أدوات JSON مجانية، صفر كوتة بحث
- * 2) دوران بالساعة على منصتين بحث جديدتين من غير المستخدمة — كل منصة بتاخد حصتها
+ * 2) موجة 4 منصات بالساعة — مع أوزان متعلمة (weighted): المنتِج بيتقدم والأعور بيتأخر
  * كده زيزو بيصطاد على كل المصادر بدون أي تعديل على قواعد الداتابيز.
  */
-export function expandSourceTypes(types: string[], opts?: { all?: boolean }): string[] {
+export function expandSourceTypes(types: string[], opts?: { all?: boolean; weighted?: Record<string, number> }): string[] {
   const base = types.filter(Boolean)
   const used = new Set(base)
   const all = Object.keys(PLATFORM_SITES)
@@ -662,11 +667,17 @@ export function expandSourceTypes(types: string[], opts?: { all?: boolean }): st
   }
 
   // الدوران بالساعة: 4 منصات بحث جديدة كل نبضة من اللي مش مستخدمة
-  // (كانت 2 — كانت هتاخد ساعات طويلة تغطي الـ11 منصة الدوارة)
+  // مع أوزان متعلمة (weighted): المنتِج بيتقدم والأعور بيتأخر — والتعادل بيفضل دوّار بالساعة
+  // (اللف الدوري حول النهاية بيمنع نزع المنصات الآخرة لما start يقرب من الآخر)
   const searchUnused = all.filter((t) => !used.has(t) && !(FREE_SOURCE_TYPES as readonly string[]).includes(t))
   const hour = Math.floor(Date.now() / 3_600_000)
   const start = searchUnused.length ? (hour * 4) % searchUnused.length : 0
-  const wave = searchUnused.slice(start, start + 4)
+  const rotated = searchUnused.length ? [...searchUnused.slice(start), ...searchUnused.slice(0, start)] : []
+  const weighted = opts?.weighted
+  const wave = (weighted
+    ? [...rotated].sort((a, b) => (weighted[b] ?? 1) - (weighted[a] ?? 1))
+    : rotated
+  ).slice(0, 4)
 
   // الأنواع الأصلية + حصة الدوران حسب السقف (المصادر المجانية مش بتتحاسب)
   const budget = Math.max(0, MAX_SOURCE_TYPES_PER_JOB - base.length)
@@ -983,7 +994,7 @@ export async function runDiscovery(
   sourceTypes: string[],
   queries: string[],
   limitPerQuery = 5,
-  opts?: { maxSearches?: number; passes?: number },
+  opts?: { maxSearches?: number; passes?: number; queriesByType?: Record<string, string[]> },
 ): Promise<{ items: DiscoveredItem[]; adaptersUsed: string[] }> {
   const adaptersUsed: string[] = []
   const types = [...new Set(sourceTypes.length ? sourceTypes : ["GOOGLE_SEARCH"])]
@@ -1012,6 +1023,7 @@ export async function runDiscovery(
       const q = queries[pass]
       if (!q) continue
       let batch: DiscoveredItem[] = []
+      let chosen = q // الاستعلام اللي هيتساب بصمته على العناصر (للتعلم)
       try {
         if (st === "GOOGLE_MAPS") {
           // المسار الأساسي: Serper Places (مفتاح واحد يخدم الاثنين) — fallback: Google Places API الرسمي
@@ -1045,10 +1057,11 @@ export async function runDiscovery(
         } else if (PLATFORM_SITES[st]) {
           // المنصة بتاخد استعلامات بلغتها هي — مش استعلام القاعدة العام
           // (السبب: «كافيهات مدينة نصر» على wuzzuf/OLX/Quora = صفر نتايج = 9 منصات ميتة)
-          // التناوب: (جولة + ترتيب المنصة) % عدد الاستعلامات — المسح الشامل (جولة واحدة)
-          // بيوزع الشكّل والبذور المضمونة على المنصات بالتناوب، فكل منصة بتاخد حصة حية
-          const qs = platformQueries(st, q)
+          // الأولوية للدروس المتعلمة (queriesByType) — بعدين الأشكال الثابتة
+          // التناوب: (جولة + ترتيب المنصة) % عدد الاستعلامات
+          const qs = [...new Set([...(opts?.queriesByType?.[st] ?? []), ...platformQueries(st, q)])]
           const qq = qs[(pass + types.indexOf(st)) % qs.length]
+          chosen = qq
           batch = await platformAdapter(st, qq, limitPerQuery, RECENT)
           if (batch.length) adaptersUsed.push(`site:${st.toLowerCase()}`)
         } else if (st === "NEWS") {
@@ -1064,6 +1077,9 @@ export async function runDiscovery(
         console.warn(`[discovery] adapter ${st} failed on "${q.slice(0, 60)}": ${err instanceof Error ? err.message.slice(0, 120) : err}`)
         batch = []
       }
+      // تتبع التعلم: كل عنصر بيشيل بصمة المهارة + الاستعلام اللي جابه
+      // (عشان SkillStat/SkillLesson يتغذوا بأي استعلام ومنصة بجيب ليدز فعلًا)
+      if (batch.length) batch = batch.map((it) => ({ ...it, viaType: st, viaQuery: chosen }))
       // مصادر الـJSON/HTML المجانية (REDDIT/TELEGRAM/RSS) أساسها مجاني ومش بيحرق كوتة البحث — مش بتتحسب من السقف
       if (!FREE.includes(st)) {
         searches++

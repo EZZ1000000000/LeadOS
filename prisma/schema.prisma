@@ -78,6 +78,50 @@ model Workspace {
   platformAccounts PlatformAccount[]
   tacticStats     TacticStat[]
   evolutionProposals EvolutionProposal[]
+  skillStats      SkillStat[]
+  skillLessons    SkillLesson[]
+}
+
+// ═══ عقل المهارات — الإحصاء والتعلم (doc §3) ═══
+// SkillStat: وزن كل منصة-مهارة لكل ورشة — أعلى = الـselector بيختارها أكتر
+// التعلم: ليد جديد → weight يزيد؛ جوبات بدون نتايج → الوزن بيهدّي ببطء
+model SkillStat {
+  id          String    @id @default(cuid())
+  workspaceId String
+  platform    String
+  runs        Int       @default(0) // عدد الجوبات اللي المهارة دخلتها
+  results     Int       @default(0) // عناصر مكتشفة إجمالي
+  leads       Int       @default(0) // ليدز اتعملت
+  wins        Int       @default(0) // ليدز عالية النية/الدرجة
+  weight      Float     @default(1.0)
+  lastUsedAt  DateTime?
+  lastLeadAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform])
+  @@index([platform])
+}
+
+// SkillLesson: ذاكرة الاستعلامات — استعلامات حققت ليدز بتترجع أولًا + استعلامات AI المولّدة
+model SkillLesson {
+  id          String    @id @default(cuid())
+  workspaceId String
+  platform    String
+  query       String
+  niche       String?
+  leads       Int       @default(1)
+  quality     Float     @default(0) // مجموع درجات الليدز الناتجة
+  source      String    @default("learned") // learned | ai
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform, query])
+  @@index([platform, quality])
 }
 
 model WorkspaceMember {
