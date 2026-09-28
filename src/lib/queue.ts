@@ -213,18 +213,18 @@ export async function ingestDiscoveredItems(
     // بروفايلات لينكدإن الشخصية مش بيزنسات — الشركات بتتجمع من /company/ بس
     if (/linkedin\.com\/(in|pub)\//i.test(item.url)) continue
     // بيزنسات خرائط جوجل: قائمة استهداف مباشرة — مش شرط فيها نية شراء صريحة
-    const isMapsBusiness = item.contentType === "BUSINESS" || (item.rawData as { platform?: string } | null)?.platform === "GOOGLE_MAPS"
-    // JOBS platform: keep only expansion-signal roles (managers/dev/sales/marketing) —
-    // generic operator/technician ads are hiring noise, not a growth lead.
     const itemPlatform = typeof (item.rawData as { platform?: string } | null)?.platform === "string"
       ? (item.rawData as { platform?: string }).platform
       : undefined
+    const isMapsBusiness = item.contentType === "BUSINESS" || itemPlatform === "GOOGLE_MAPS"
+    // أدلة الأعمال + صفحات التقييمات = قوائم بيزنس حقيقية زي الخرايط بالظبط (اصلاح: كانوا بيرفضوا كليدز)
+    const isListingBusiness = isMapsBusiness || itemPlatform === "DIRECTORY" || itemPlatform === "REVIEWS"
     if (itemPlatform === "JOBS" && !/مدير|manager|مبرمج|developer|مطور|مسؤول|sales|مبيعات|تسويق|marketing|محاسب|accountant|مصمم|designer|hr|موارد بشرية/i.test(title)) continue
     // تصنيف إشارة النية (أولوية الصياد): صاحب الحاجة الصريحة → اللي بيقارن بالمنافسين → اللي بيصرف إعلانات → قوائم السوق
     const hay = `${item.title ?? ""} ${item.body}`
     const intentSignal: string | null = itemPlatform === "ADS_LIBRARY"
       ? "AD_SPENDER"
-      : isMapsBusiness
+      : isListingBusiness
         ? "MARKET_LIST"
         : /محتاج|عايز|عاوز|مطلوب|أبحث|ابحث|ببحث|بحاجة|ناقص|دور علي|بيدور|need|looking for|seeking|we need/i.test(hay)
           ? "EXPLICIT_NEED"
@@ -254,7 +254,7 @@ export async function ingestDiscoveredItems(
       })
     } catch {
       // متجمع قبل كده — لو بيزنس خرائط لسه منغير Lead، كمّل تسجيله؛ وإلا تجاوز
-      if (!isMapsBusiness) continue
+      if (!isListingBusiness) continue
       const existing = await db.contentItem.findUnique({
         where: { sourceId_externalId: { sourceId: source.id, externalId: item.externalId } },
       }).catch(() => null)
@@ -266,7 +266,7 @@ export async function ingestDiscoveredItems(
 
     // Classify (AI if available, heuristic otherwise)
     const { classification } = await classifyContent(wsId, item.title, item.body, item.rawData ? JSON.stringify(item.rawData) : undefined)
-    if (!classification.is_lead && isMapsBusiness) {
+    if (!classification.is_lead && isListingBusiness) {
       // بيزنس حقيقي من خرائط جوجل — يتحفظ كـ lead (قائمة اتصال لبيع الأنظمة حتى من غير نية معلنة)
       classification.is_lead = true
       classification.business_type = classification.business_type || (item.rawData as { category?: string })?.category || ""
