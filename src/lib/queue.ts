@@ -473,7 +473,8 @@ export async function processTick(
   if (opts?.fullSweep) {
     const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 3 })
     for (const w of wsIds) {
-      await enqueueJob(w.id, "DISCOVERY", { fullSweep: true, query: "عملاء محتاجين خدمات رقمية في مصر" }, 80)
+      // أولوية 100: فوق كل حاجة — جوبات البحث العميق القديمة (أولوية 80) كانت بتتعطسها
+      await enqueueJob(w.id, "DISCOVERY", { fullSweep: true, query: "عملاء محتاجين خدمات رقمية في مصر" }, 100)
     }
   }
 
