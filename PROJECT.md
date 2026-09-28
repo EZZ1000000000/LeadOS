@@ -37,6 +37,7 @@
 - **التكتيكات في المنتقي**: `gitSkillsTactics(platform, niche)` بتحدد أفضل ما ات حصد للمنصة/النيش — سطور `[GitSkills] name: desc` بتدخل برومبتات `freshAiQueries` و`aiSelectPlatforms` — والاستخدام/الليدز بيتسجلوا على التكتيك نفسه (`useCount/leadCount/weight`).
 - **خريطة المهارات skill-map** (`src/lib/skills/graph.ts`): جراف حتمي من الاستخدام الحقيقي — عقد: منصات (SKILL.md×19) + تكتيكات GitSkills — وصلات: `tactic` (وسوم GitSkill→منصة)، `couse` (منصات اشتغلوا نفس الجوب من metadata آخر 7 أيام)، أوزان من SkillStat. `graphPlatformPriorities(wsId, niche)` = وزن × تكتيك × شركاء منتجين × صلة نيش — **بيشتغل كل نبضة حتى من غير AI**. معروض في `/api/skills` (graph.nodes/links) وكارت المهارات (SVG مصغر).
 - **حق الجعان**: `expandSourceTypes({starved})` — 3 مقاعد للأقوى وزنًا + **مقعد مضمون لمصدر صفر ليدز** — الاستكشاف مابيقفش والأوزان ما تخنقش المنصات الصامية.
+- **سرقة إعلانات المنافسين الممولة (اتضاف 2026-09-28 — «العملاء من إعلانات المنافسين من كل المصادر»)**: `competitorAdQueries(names)` بتولد لكل منافس مسجل `<اسم> اعلانات` + `<اسم> اعلان ممول` — بتتحط **أول استعلامات ADS_LIBRARY** + المنصة بياخد مقعد مضمون في الموجة لو في منافسين. المسح الشامل بيرتب ADS_LIBRARY/FREELANCE/JOBS **أول الموجة** (كانوا بيتحرموا بسبب سقف البحث). كل نتيجة إعلان فعلي = AD_SPENDER تلقائيًا. المنافسين بيتسجلوا من شاشة البحث (خطوة «المنافسين» كـBusiness مرتبط).
 - **إصلاح قديم**: `processTick` كان بيرجع `jobs.length` (خارج نطاقها — ReferenceError صامت بعد ما الشغل يخلص) → عدّاد `processed` سليم.
 
 **فلتر نشر لكل منصة**: كورا/ديسكورد 90 يوم، معارض 75، أدلة/تقييمات 60، إعلانات/سوق 30 — (الـ14 يوم كان بيقتلهم).
@@ -56,7 +57,7 @@
 | MARKETPLACE | olx.com.eg + dubizzle + hatla2ee | تجار وناس بتبيع أصول | بحث `site:` |
 | TELEGRAM | 8 قنوات مصرية حية (ال بورصة، المال، BusinessEgypt...) | بوستات أعمال وفرص | **t.me/s بدون مفاتيح** ← fallback بحث |
 | FREELANCE | mostaql + khamsat + bahr | أصحاب مشاريع بيدوروا مبرمجين دلوقتي | بحث `site:` |
-| ADS_LIBRARY | facebook.com/ads/library | **مين بيصرف على إعلانات** = عنده ميزانية | بحث `site:` بمسار |
+| ADS_LIBRARY | **4 مكتبات إعلانات**: facebook.com/ads/library (ميتا: فيسبوك+انستجرام) + adstransparency.google.com (جوجل+يوتيوب) + ads.tiktok.com + linkedin.com/ad-library | **مين بيصرف على إعلانات** = عنده ميزانية + **إعلانات المنافسين المسجلين** | بحث `site:` بمسار + فلتر إعلان-فعلي (ميتا بـ?id=، تيك توك بدون /resources، لينكدإن /advertiser) |
 | REVIEWS | maps + tripadvisor + elmenus | بيزنس عنده شكاوى تقييمات | بحث `site:` |
 | EVENTS | fb/events + egyta + cairoict + إكسبوهات | فعاليات B2B وشبكينج | بحث `site:` بمسار |
 | QUORA | quora + ar.quora | أسئلة نية («أفضل سيستم في مصر؟») | بحث `site:` |
@@ -134,7 +135,7 @@ VERCEL_TOKEN=$VERCEL_TOKEN bunx vercel env pull scripts/deploy/.env.prod.pull --
 9. **`.gitignore` و`.vercelignore` كانوا بيقطفوا `/skills`** (اتصلح 2026-09-28): ملفات SKILL.md الـ19 كانت مش بتنزل على Vercel → `skills:gen` بيولّد مانيفست بصفر → الاسكلز بتقع بصمت (`skill: null` في metadata). الإصلاح: `/skills/*` + `!/skills/discovery` في الاتنين — **لو ضفت مهارة جديدة ومش ظاهرة في الإنتاج، افحص لوج البناء سطر `skills manifest: N skills`** (لازم 19+).
 10. **dbq.py مع JSON**: استخدم dollar-quoting `$$key$$` بدل علامات التنصيص، وافتكر `ContentItem.collectedAt` (مش createdAt) و`Lead.createdAt`.
 
-## 9) الحالة دلوقتي (آخر تحديث: 2026-09-28 ~16:30)
+## 9) الحالة دلوقتي (آخر تحديث: 2026-09-28 ~17:15)
 
 **سجل «كل مهمة والاسكلز المناسبة ليها» (اتضاف 2026-09-28 — طلب المستخدم):**
 - كل جوبة اكتشاف بتسجل في `SearchJob.metadata.skills` مصفوفة: `{platform, skill, why, weight, aiSmith, queries}` — ليه المنصة دي اتاخدت (قاعدة/مجاني/AI/حق الجعان/وزن عالي/دوران) + استعلاماتها الجاهزة.
