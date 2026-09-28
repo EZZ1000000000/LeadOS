@@ -71,3 +71,19 @@ worker/__pycache__/
 *.sqlite
 *.db
 !.env.example
+
+# ── Task 11: private data — never track again (repo is public) ──
+backup/
+upload/
+logs/
+db/backups/
+.secrets-local/
+config/*cookies*.json
+scripts/*cookies*.json
+scripts/deploy/.tokens*
+scripts/tick-loop.sh
+scripts/set-vercel-env.sh
+scripts/zenrows-*.html
+*.pid
+*.bundle
+*.tar.gz
