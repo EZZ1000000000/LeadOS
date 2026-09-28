@@ -4,7 +4,7 @@
 import type { Prisma } from "@prisma/client"
 import { db } from "@/lib/db"
 import { asArray } from "@/lib/constants"
-import { buildSearchPlan, runDiscovery, expandSourceTypes, type DiscoveredItem } from "@/lib/discovery"
+import { buildSearchPlan, runDiscovery, expandSourceTypes, competitorAdQueries, type DiscoveredItem } from "@/lib/discovery"
 import { classifyContent } from "@/lib/classification"
 import { findDuplicateLead, normalizePhone } from "@/lib/dedup"
 import { recomputeLeadScore } from "@/lib/scoring"
@@ -119,10 +119,14 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       selectedBy = "ai-selector"
     }
   } catch { /* الـAI وقع — جراف المهارات والأوزان المتعلمة تكفي */ }
-  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted, starved })
+  let sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted, starved })
   // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
   // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
   let queries = plan.queries
+  // ═══ سرقة إعلانات المنافسين الممولة (طلب: من كل مصادر الإعلانات) ═══
+  // لكل منافس مسجل: استعلامات مكتبات الإعلانات (ميتا + جوجل/يوتيوب + تيك توك + لينكدإن)
+  // — ADS_LIBRARY بياخد مقعد مضمون في الموجة لو في منافسين، وكل نتيجة = AD_SPENDER تلقائيًا
+  let adPoach: string[] = []
   try {
     const comps = await db.competitor.findMany({
       where: { competitor: { workspaceId: wsId } },
@@ -133,6 +137,8 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     if (names.length) {
       const poach = names.slice(0, 2).map((n) => `بديل ${n} توصية`) as string[]
       queries = [...poach, ...queries]
+      adPoach = competitorAdQueries(names)
+      if (adPoach.length && !sourceTypes.includes("ADS_LIBRARY")) sourceTypes.push("ADS_LIBRARY")
     }
   } catch { /* بدون منافسين — البحث العادي */ }
 
@@ -145,6 +151,11 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     if (st === "GOOGLE_MAPS" || PLATFORM_QUERY_SHAPES[st]) {
       queriesByType[st] = await queriesForPlatform(wsId, st, niche).catch(() => [] as string[])
     }
+  }
+  // ═══ استعلامات إعلانات المنافسين أولًا في ADS_LIBRARY — قبل الأشكال الثابتة ═══
+  // الأدابتر بيضيف سلاسل site: لمكتبات الإعلانات (ميتا/جوجل/تيك توك/لينكدإن) على استعلامات المنافسين دي
+  if (adPoach.length) {
+    queriesByType["ADS_LIBRARY"] = [...adPoach, ...(queriesByType["ADS_LIBRARY"] ?? [])].slice(0, 6)
   }
   let aiSmithTarget: string | null = null
   const smithPool = sourceTypes.filter((t) => PLATFORM_QUERY_SHAPES[t])
@@ -168,7 +179,9 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       ? "من قاعدة البحث"
       : FREE_SET.has(st)
         ? "مجاني دايمًا (JSON بلا مفاتيح)"
-        : aiPicks.includes(st)
+        : st === "ADS_LIBRARY" && adPoach.length
+          ? "سرقة إعلانات المنافسين الممولة"
+          : aiPicks.includes(st)
           ? "اختيار AI للنيش"
           : starved.includes(st)
             ? "حق الجعان — صفر ليدز"

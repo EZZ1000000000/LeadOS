@@ -547,7 +547,9 @@ export const PLATFORM_SITES: Record<string, string[]> = {
   TELEGRAM: ["t.me", "telegram.me"],
   FREELANCE: ["mostaql.com", "khamsat.com", "bahr.sa"],
   // الموجة الجديدة: أعلى نية شراء بأقل خطر حظر (طلبات 24/25)
-  ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads"],
+  // ═══ مكتبات الإعلانات من كل المنصات (طلب: العملاء من إعلانات المنافسين الممولة من كل المصادر) ═══
+  // ميتا (فيسبوك+انستجرام) + جوجل/يوتيوب (مركز شفافية الإعلانات) + تيك توك (المحتوى التجاري) + لينكدإن (Ad Library)
+  ADS_LIBRARY: ["facebook.com/ads/library", "facebook.com/ads", "adstransparency.google.com", "ads.tiktok.com", "linkedin.com/ad-library"],
   REVIEWS: ["google.com/maps", "tripadvisor.com", "elmenus.com"],
   EVENTS: ["facebook.com/events", "egyta.com", "cairoict.com", "egyfoodexpo.com", "eventbrite.com", "egyevent.com", "cafex-me.com"],
   QUORA: ["quora.com", "ar.quora.com"],
@@ -557,6 +559,21 @@ export const PLATFORM_SITES: Record<string, string[]> = {
 
 /** سقف أنواع البحث المدفوعة في الجوبة الواحدة — مصادر الـJSON المجانية مش محسوبة معاه */
 export const MAX_SOURCE_TYPES_PER_JOB = 6
+
+/**
+ * سرقة إعلانات المنافسين (طلب: «يسكراب العملاء من الإعلانات الممولة بتاعة المنافسين من كل المصادر»):
+ * لكل منافس مسجل بنتجّد إعلاناته النشطة في كل مكتبات الإعلانات مرة واحدة —
+ * ميتا (فيسبوك+انستجرام) + جوجل/يوتيوب (adstransparency) + تيك توك (ads.tiktok.com) + لينكدإن (ad-library).
+ * الأدابتر بتضيف سلاسل site: تلقائيًا على الاستعلامات دي — والنتيجة كلها AD_SPENDER تلقائيًا.
+ */
+export function competitorAdQueries(names: string[], max = 5): string[] {
+  const clean = [...new Set(names.map((n) => n.trim()).filter((n) => n.length >= 2))].slice(0, 3)
+  const out: string[] = []
+  for (const n of clean) {
+    out.push(`${n} اعلانات`, `${n} اعلان ممول`)
+  }
+  return out.slice(0, max)
+}
 
 // ═════ أسئلة كل منصة بلغتها هي ═════
 // (السبب: المنصات الدوارة كانت بتاخد أسئلة القاعدة العامة زي «كافيهات مدينة نصر»
@@ -573,8 +590,8 @@ export const PLATFORM_QUERY_SHAPES: Record<string, { shape: (s: string) => strin
     seeds: ["كافيه للبيع", "مطعم للبيع", "محل ملابس للبيع", "معدات مطعم للبيع", "شركة سياحه للبيع", "مصنع صغير للبيع"],
   },
   ADS_LIBRARY: {
-    shape: (s) => [`${s} اعلانات`],
-    seeds: ["اعلان متجر اونلاين", "اعلان عقارات مصر", "اعلان عيادة", "اعلان مطعم", "اعلان كورسات"],
+    shape: (s) => [`${s} اعلانات`, `${s} اعلان ممول`],
+    seeds: ["اعلان متجر اونلاين", "اعلان عقارات مصر", "اعلان عيادة", "اعلان مطعم", "اعلان كورسات", "اعلانات المنافسين مصر"],
   },
   QUORA: {
     shape: (s) => [`افضل ${s}`, `ازاي اختار ${s}`],
