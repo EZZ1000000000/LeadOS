@@ -1,11 +1,9 @@
 // اختبار serp-scrape محليًا: Bing مباشر + ZenRows
 import { searchBingDirect, searchBingViaZenrows } from "../src/lib/serp-scrape"
 
-process.env.ZENROWS_API_KEYS = [
-  "***REMOVED***",
-  "***REMOVED***",
-  "***REMOVED***",
-].join(",")
+if (!process.env.ZENROWS_API_KEYS) {
+  throw new Error("ZENROWS_API_KEYS env var required")
+}
 
 async function main() {
   console.log("=== 1) Bing مباشر ===")

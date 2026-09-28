@@ -1,12 +1,11 @@
 """اختبار مفاتيح ZenRows الثلاثة — شغالين؟ وإيه اللي بيستهلو من الكريدت؟"""
+import os
 import urllib.request, urllib.parse, urllib.error, ssl, json, re
 
 ctx = ssl.create_default_context()
-KEYS = [
-    "***REMOVED***",
-    "***REMOVED***",
-    "***REMOVED***",
-]
+KEYS = [k.strip() for k in os.environ.get("ZENROWS_API_KEYS", "").split(",") if k.strip()]
+if not KEYS:
+    raise SystemExit("set ZENROWS_API_KEYS env var (comma-separated)")
 
 def zenrows(key, target, params=None, timeout=40):
     qs = {"apikey": key, "url": target}

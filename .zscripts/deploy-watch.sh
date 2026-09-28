@@ -1,7 +1,8 @@
 #!/bin/bash
 # حلقة نشر prebuilt — تحاول كل 20 دقيقة أول ما قفل Vercel يرفع
 # تنجح مرة واحدة وتوقف
-VT="***REMOVED***"
+source /home/z/my-project/scripts/deploy/.tokens 2>/dev/null || source /home/z/my-project/.secrets-local/deploy-tokens
+VT="${VERCEL_TOKEN:?VERCEL_TOKEN required}"
 LOG=/home/z/my-project/.zscripts/deploy-watch.log
 cd /home/z/my-project
 

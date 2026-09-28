@@ -1,8 +1,9 @@
 """اختبار بدائل SERP الرخيصة: DDG HTML + Bing — مباشرة وعبر ZenRows (1 كريدت)."""
+import os
 import urllib.request, urllib.parse, urllib.error, ssl, re
 
 ctx = ssl.create_default_context()
-K1 = "***REMOVED***"
+K1 = os.environ.get("ZENROWS_API_KEYS", "").split(",")[0].strip()
 Q = "site:linkedin.com/in cairo dentist"
 
 def fetch(url, timeout=45, headers=None):

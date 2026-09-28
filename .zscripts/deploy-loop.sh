@@ -1,7 +1,8 @@
 #!/bin/bash
 # حلقة إعادة نشر تلقائية — كل 15 دقيقة تمسح البلوكات وتحاول النشر
 # توقف أول ما deployment يوصل READY
-VT="***REMOVED***"
+source /home/z/my-project/scripts/deploy/.tokens 2>/dev/null || source /home/z/my-project/.secrets-local/deploy-tokens
+VT="${VERCEL_TOKEN:?VERCEL_TOKEN required}"
 LOG=/home/z/my-project/.zscripts/deploy-loop.log
 echo "[$(date +%H:%M)] deploy loop started" >> $LOG
 
