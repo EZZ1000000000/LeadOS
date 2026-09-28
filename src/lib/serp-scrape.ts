@@ -198,7 +198,13 @@ async function zenrowsFetch(key: string, targetUrl: string, timeoutMs: number): 
   return res.text()
 }
 
+// ⏱️ تايم-أوت زنرو: بنج العادي بيرجع في 2-5 ث — 18 ث برضه كصمام أمان (كان 45 = بيقتل الـ tick)
+const ZR_TIMEOUT = 18_000
+
 export async function searchBingViaZenrows(query: string, limit = 10): Promise<ScrapedResult[]> {
+  // استعلامات site: → zenrows مالوش لازمة (بينج بيتجاهل site: من سيرفرات DC ويرجع زبالة)
+  // دي منطقة exa (includeDomains) وserpapi (جوجل حقيقي) — تخطي فوري بدل 45 ثانية هدرة
+  if (/\bsite:\S+/.test(query)) throw new Error("zenrows skip: استعلام site: — مش مهمته")
   const keys = zenrowsKeys()
   if (!keys.length) throw new Error("no zenrows keys")
   if (zenrowsBudgetLeft() <= 0) throw new Error("zenrows الحصة اليومية خلاص — نكمل بكده بكرة")
@@ -212,13 +218,14 @@ export async function searchBingViaZenrows(query: string, limit = 10): Promise<S
   for (let i = 0; i < alive.length; i++) {
     const key = alive[(zrCursor + i) % alive.length]
     try {
-      const html = await zenrowsFetch(key, bingUrl, 45000)
+      const html = await zenrowsFetch(key, bingUrl, ZR_TIMEOUT)
       zrCursor = (zrCursor + i + 1) % alive.length
       const results = parseBingHtml(html, limit)
       if (results.length) return results
       // b_no حقيقي = استعلام فعلاً من غير نتايج → رجّع فاضي فورًا من غير ما نحرق كريدت بمفاتيح تانية
       if (/class="b_no"|b_noScp/i.test(html)) return []
-      // غير كده صفحة تحد/فاضية → جرب المفتاح اللي بعده
+      // غير كده صفحة تحد/زبالّة (بينج بيتجاهل site:) → برّد المفتاح وجرب اللي بعده
+      zrCooldownUntil.set(key, Date.now() + 5 * 60_000)
       lastErr = new Error("zenrows bing 0 results")
     } catch (err) {
       lastErr = err

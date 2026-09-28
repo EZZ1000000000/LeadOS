@@ -300,98 +300,127 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs = 15000): Pro
 }
 
 // --- Serper (google.serper.dev — أعلى جودة وأرخص فشل) ---
-// ═══ سرقة إعلانات المنافسين الممولة (طلب: العملاء من الإعلانات الممولة من كل المصادر) ═══
-// كل نداء SERP بيرجع كمان حقل `ads` — إعلانات جوجل المدفوعة الفعلية لمعلنين في نفس النيش.
-// المعلن ده بيصرف فلوس على إعلانات الآن (AD_SPENDER) — أعلى إشارة قدرة دفع — وكنّا بندفع مقابل
-// البحث ده و نرمي الإعلانات! دلوقتي بتتقرا وتتقدم فوق الـorganic كأعلى قيمة.
+// كاش الموت: لما الكريدت يخلص (400 Not enough credits) مفيش لازمة نكلف كل استعلام 0.5 ث فشل —
+// بنعلّم المزود ميت 6 ساعات، وبنجرب تاني لما صاحبنا يجيب مفتاح جديد (الإعادة كل نشر جديد على أي حال)
+const providerDeadUntil = new Map<string, number>()
+function noteProviderDead(name: string, hours = 6): void {
+  providerDeadUntil.set(name, Date.now() + hours * 3600_000)
+}
+function isProviderDead(name: string): boolean {
+  return (providerDeadUntil.get(name) ?? 0) > Date.now()
+}
+
 async function searchSerper(query: string, limit: number, recencyDays: number): Promise<WebSearchResult[]> {
   const key = process.env.SERPER_API_KEY
   if (!key) throw new Error("no key")
+  if (isProviderDead("serper")) throw new Error("serper dead-cache (credits خلصانة — كاش 6 ساعات)")
   const tbs = googleTimeFilter(recencyDays)
-  const data = (await fetchJson("https://google.serper.dev/search", {
-    method: "POST",
-    headers: { "X-API-KEY": key, "Content-Type": "application/json" },
-    body: JSON.stringify({ q: query, num: Math.min(limit, 20), gl: "eg", hl: "ar", ...(tbs ? { tbs } : {}) }),
-  })) as {
-    organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string; position?: number }>
-    ads?: Array<{ title?: string; link?: string; snippet?: string; description?: string; displayed_link?: string; position?: number }>
+  try {
+    const data = (await fetchJson("https://google.serper.dev/search", {
+      method: "POST",
+      headers: { "X-API-KEY": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ q: query, num: Math.min(limit, 20), gl: "eg", hl: "ar", ...(tbs ? { tbs } : {}) }),
+    })) as {
+      organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string; position?: number }>
+      ads?: Array<{ title?: string; link?: string; snippet?: string; description?: string; displayed_link?: string; position?: number }>
+    }
+    const organic = (data.organic ?? [])
+      .filter((r) => r.link)
+      .map((r) => ({
+        url: r.link!,
+        name: r.title ?? "",
+        snippet: r.snippet ?? "",
+        host_name: hostnameOf(r.link!),
+        date: r.date,
+        rank: r.position,
+      }))
+    // الإعلانات الممولة: عنوان الإعلان + نصه + رابط الهبوط + الدومين الظاهر للمعلن
+    const ads = (data.ads ?? [])
+      .filter((a) => a.link)
+      .slice(0, 4)
+      .map((a) => ({
+        url: a.link!,
+        name: a.title ?? "",
+        snippet: a.snippet ?? a.description ?? "",
+        host_name: hostnameOf(a.link!),
+        date: undefined,
+        rank: 0, // فوق كل الـorganic — أعلى نية
+        sponsored: true,
+        displayedLink: a.displayed_link ?? hostnameOf(a.link!),
+      }))
+    return [...ads, ...organic]
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // الكريدت خلص = موت شبه دائم — كاش 6 ساعات عشان ميتأخرش على السلسلة كل استعلام
+    if (msg.includes("HTTP 400") || msg.includes("HTTP 402") || msg.includes("HTTP 403")) noteProviderDead("serper", 6)
+    throw err
   }
-  const organic = (data.organic ?? [])
-    .filter((r) => r.link)
-    .map((r) => ({
-      url: r.link!,
-      name: r.title ?? "",
-      snippet: r.snippet ?? "",
-      host_name: hostnameOf(r.link!),
-      date: r.date,
-      rank: r.position,
-    }))
-  // الإعلانات الممولة: عنوان الإعلان + نصه + رابط الهبوط + الدومين الظاهر للمعلن
-  const ads = (data.ads ?? [])
-    .filter((a) => a.link)
-    .slice(0, 4)
-    .map((a) => ({
-      url: a.link!,
-      name: a.title ?? "",
-      snippet: a.snippet ?? a.description ?? "",
-      host_name: hostnameOf(a.link!),
-      date: undefined,
-      rank: 0, // فوق كل الـorganic — أعلى نية
-      sponsored: true,
-      displayedLink: a.displayed_link ?? hostnameOf(a.link!),
-    }))
-  return [...ads, ...organic]
 }
 
 // --- Tavily ---
 async function searchTavily(query: string, limit: number, recencyDays: number): Promise<WebSearchResult[]> {
   const key = process.env.TAVILY_API_KEY
   if (!key) throw new Error("no key")
-  const data = (await fetchJson("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      max_results: Math.min(limit, 15),
-      search_depth: "basic",
-      include_answer: false,
-      ...(recencyDays <= 90 ? { days: Math.max(1, recencyDays) } : {}),
-    }),
-  })) as {
-    results?: Array<{ title?: string; url?: string; content?: string; published_date?: string }>
+  if (isProviderDead("tavily")) throw new Error("tavily dead-cache (حصة الشهر خلصت — بترجع أول الشهر)")
+  try {
+    const data = (await fetchJson("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        max_results: Math.min(limit, 15),
+        search_depth: "basic",
+        include_answer: false,
+        ...(recencyDays <= 90 ? { days: Math.max(1, recencyDays) } : {}),
+      }),
+    })) as {
+      results?: Array<{ title?: string; url?: string; content?: string; published_date?: string }>
+    }
+    return (data.results ?? [])
+      .filter((r) => r.url)
+      .map((r, i) => ({
+        url: r.url!,
+        name: r.title ?? "",
+        snippet: r.content ?? "",
+        host_name: hostnameOf(r.url!),
+        date: r.published_date,
+        rank: i + 1,
+      }))
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // 432/429 = حصة الشهر خلصت — موت مؤقت معروف، كاش 6 ساعات
+    if (msg.includes("HTTP 432") || msg.includes("HTTP 429")) noteProviderDead("tavily", 6)
+    throw err
   }
-  return (data.results ?? [])
-    .filter((r) => r.url)
-    .map((r, i) => ({
-      url: r.url!,
-      name: r.title ?? "",
-      snippet: r.content ?? "",
-      host_name: hostnameOf(r.url!),
-      date: r.published_date,
-      rank: i + 1,
-    }))
 }
 
 // --- SerpAPI ---
 async function searchSerpApi(query: string, limit: number, recencyDays: number): Promise<WebSearchResult[]> {
   const key = process.env.SERPAPI_API_KEY
   if (!key) throw new Error("no key")
+  if (isProviderDead("serpapi")) throw new Error("serpapi dead-cache (الـ 41 بحث خلصوا)")
   const tbs = googleTimeFilter(recencyDays)
-  const params = new URLSearchParams({ engine: "google", q: query, num: String(Math.min(limit, 20)), gl: "eg", hl: "ar", api_key: key })
-  if (tbs) params.set("tbs", tbs)
-  const data = (await fetchJson(`https://serpapi.com/search.json?${params.toString()}`, { method: "GET" })) as {
-    organic_results?: Array<{ title?: string; link?: string; snippet?: string; date?: string; position?: number }>
+  try {
+    const params = new URLSearchParams({ engine: "google", q: query, num: String(Math.min(limit, 20)), gl: "eg", hl: "ar", api_key: key })
+    if (tbs) params.set("tbs", tbs)
+    const data = (await fetchJson(`https://serpapi.com/search.json?${params.toString()}`, { method: "GET" })) as {
+      organic_results?: Array<{ title?: string; link?: string; snippet?: string; date?: string; position?: number }>
+    }
+    return (data.organic_results ?? [])
+      .filter((r) => r.link)
+      .map((r) => ({
+        url: r.link!,
+        name: r.title ?? "",
+        snippet: r.snippet ?? "",
+        host_name: hostnameOf(r.link!),
+        date: r.date,
+        rank: r.position,
+      }))
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("HTTP 401") || msg.includes("HTTP 429")) noteProviderDead("serpapi", 6)
+    throw err
   }
-  return (data.organic_results ?? [])
-    .filter((r) => r.link)
-    .map((r) => ({
-      url: r.link!,
-      name: r.title ?? "",
-      snippet: r.snippet ?? "",
-      host_name: hostnameOf(r.link!),
-      date: r.date,
-      rank: r.position,
-    }))
 }
 
 // --- Exa ---
