@@ -51,7 +51,8 @@ prompt
 
 server.log
 # Skills directory
-/skills/
+/skills/*
+!/skills/discovery/
 # LeadOS Worker — أمان: ممنوع رفع الجلسات والكوكيز وحالة الميزانيات
 worker/state/
 worker/profiles/

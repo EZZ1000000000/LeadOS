@@ -12,6 +12,7 @@ import { runDeepResearch } from "@/lib/research"
 import { enrollLead, processDueEnrollments, reactivationSweep } from "@/lib/sequences"
 import { PLATFORM_SITES, PLATFORM_QUERY_SHAPES } from "@/lib/discovery"
 import { skillStatsSnapshot, recordSkillRun, recordSkillResults, recordSkillDryRun, recordSkillNoLeads, recordSkillLead, recordLesson } from "@/lib/skills/learning"
+import { SKILL_BY_PLATFORM } from "@/lib/skills/registry"
 import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
 import { graphPlatformPriorities } from "@/lib/skills/graph"
 import { harvestGitSkills } from "@/lib/skills/gitskills"
@@ -106,6 +107,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     .filter((p) => (stats[p]?.leads ?? 0) === 0)
     .sort((a, b) => (stats[a]?.runs ?? 0) - (stats[b]?.runs ?? 0))
     .slice(0, 3)
+  const aiPicks: string[] = [] // مين الـAI اختار — للسجل الموجز لكل مهمة (doc §3)
   try {
     const free = ["REDDIT", "TELEGRAM", "RSS"]
     const declaredSet = new Set(declared.filter(Boolean))
@@ -113,6 +115,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     const picks = await aiSelectPlatforms(wsId, niche, candidates, 4, stats)
     if (picks?.length) {
       for (const [i, p] of picks.entries()) weighted[p] = Math.max(weighted[p] ?? 1, 5 - i)
+      aiPicks.push(...picks)
       selectedBy = "ai-selector"
     }
   } catch { /* الـAI وقع — جراف المهارات والأوزان المتعلمة تكفي */ }
@@ -154,6 +157,34 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     }
   }
 
+  // ═══ سجل الاسكلز المناسبة للمهمة دي (طلب: «مع كل مهمة أعرف أي الاسكلز المناسبة») ═══
+  // كل منصة في الموجة: اسم الاسكل + ليه اتاختار + استعلاماتها الجاهزة — بيتسجل في SearchJob.metadata
+  // وبيتعرض في كارت عقل المهارات + /api/skills (tasks) — الشفافية الكاملة لقرار الاختيار.
+  const FREE_SET = new Set(["REDDIT", "TELEGRAM", "RSS"])
+  const declaredSetAll = new Set(declared.filter(Boolean))
+  const skillsUsed = sourceTypes.map((st) => {
+    const skill = SKILL_BY_PLATFORM[st]
+    const why = declaredSetAll.has(st)
+      ? "من قاعدة البحث"
+      : FREE_SET.has(st)
+        ? "مجاني دايمًا (JSON بلا مفاتيح)"
+        : aiPicks.includes(st)
+          ? "اختيار AI للنيش"
+          : starved.includes(st)
+            ? "حق الجعان — صفر ليدز"
+            : (weighted[st] ?? 0) >= 3
+              ? "أعلى وزن (تعلم + جراف)"
+              : "دوران الموجة"
+    return {
+      platform: st,
+      skill: skill?.name ?? (st === "GOOGLE_MAPS" ? "maps-hunter" : null),
+      why,
+      weight: weighted[st] ?? null,
+      aiSmith: st === aiSmithTarget,
+      queries: (queriesByType[st] ?? []).slice(0, 3),
+    }
+  })
+
   const { items, adaptersUsed } = await runDiscovery(
     sourceTypes,
     queries,
@@ -189,7 +220,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
         startedAt: new Date(Date.now() - 60000),
         completedAt: new Date(),
         resultCount: items.length,
-        metadata: { adaptersUsed, plan: plan.queries, queriesByType, selectedBy, aiSmithTarget, byType },
+        metadata: { adaptersUsed, plan: plan.queries, queriesByType, selectedBy, aiSmithTarget, byType, skills: skillsUsed },
       },
     })
     await db.source.update({ where: { id: source.id }, data: { lastRunAt: new Date(), lastError: null } })

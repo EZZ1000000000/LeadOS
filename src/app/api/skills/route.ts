@@ -21,7 +21,7 @@ export async function GET() {
       where: { source: { workspaceId: wsId } },
       orderBy: { createdAt: "desc" },
       take: 20,
-      select: { metadata: true, createdAt: true },
+      select: { metadata: true, createdAt: true, query: true, resultCount: true },
     }),
     buildSkillGraph(wsId).catch(() => ({ nodes: [], links: [], builtAt: null })),
     db.gitSkill.findMany({ orderBy: [{ weight: "desc" }, { relevance: "desc" }], take: 8 }),
@@ -36,6 +36,22 @@ export async function GET() {
         return { selectedBy: m.selectedBy ?? null, aiSmithTarget: m.aiSmithTarget ?? null, byType: m.byType ?? null, at: j.createdAt }
       })
       .find((s) => s.selectedBy) ?? null
+
+  // «مع كل مهمة اعرف أي الاسكلز المناسبة» — سجل الاختيار لكل مهمة بحث (metadata.skills)
+  interface TaskSkillEntry { platform: string; skill: string | null; why: string; weight?: number | null; aiSmith?: boolean; queries?: string[] }
+  const tasks = recentSearchJobs
+    .map((j) => {
+      const m = (j.metadata ?? {}) as { skills?: TaskSkillEntry[]; selectedBy?: string; byType?: Record<string, number> }
+      return {
+        at: j.createdAt,
+        query: j.query,
+        resultCount: j.resultCount,
+        selectedBy: m.selectedBy ?? null,
+        skills: (m.skills ?? []).slice(0, 20),
+      }
+    })
+    .filter((t) => t.skills.length > 0)
+    .slice(0, 8)
 
   const statByPlatform = Object.fromEntries(stats.map((s) => [s.platform, s]))
   const skills = SKILLS.map((s) => {
@@ -66,6 +82,8 @@ export async function GET() {
       createdAt: l.createdAt,
     })),
     lastSelection,
+    // سجل «كل مهمة والاسكلز المناسبة ليها» — آخر 8 مهام بأسباب الاختيار
+    tasks,
     // خريطة المهارات (skill-map): عقد ووصلات حية من الاستخدام الحقيقي
     graph,
     // مكتبة GitSkills العالمية (3.8M مهارة — المحصود منها هنا)

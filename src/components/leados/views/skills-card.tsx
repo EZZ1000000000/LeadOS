@@ -4,7 +4,7 @@
 // + مكتبة GitSkills العالمية (3.8M مهارة — المحصود منها بيتعرض هنا)
 import { useApi, fmtNum, timeAgo } from "../shared"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Brain, Sparkles, GraduationCap, Globe, Network } from "lucide-react"
+import { Brain, Sparkles, GraduationCap, Globe, Network, ListChecks } from "lucide-react"
 
 interface GraphNode {
   id: string
@@ -26,6 +26,13 @@ interface SkillsData {
   skills: Array<{ platform: string; name: string; runs: number; leads: number; wins: number; results: number; weight: number; lastLeadAt: string | null }>
   lessons: Array<{ id: string; platform: string; query: string; leads: number; quality: number; source: string; createdAt: string }>
   lastSelection: { selectedBy: string | null; aiSmithTarget: string | null; at: string } | null
+  tasks?: Array<{
+    at: string
+    query: string | null
+    resultCount: number
+    selectedBy: string | null
+    skills: Array<{ platform: string; skill: string | null; why: string; weight?: number | null; aiSmith?: boolean; queries?: string[] }>
+  }>
   graph?: { nodes: GraphNode[]; links: GraphLink[]; builtAt: string | null }
   git?: {
     total: number
@@ -180,6 +187,51 @@ export function SkillsBrainCard() {
                 </p>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* كل مهمة والاسكلز المناسبة ليها — سجل قرار الاختيار لكل مهمة بحث */}
+        {data.tasks && data.tasks.length > 0 && (
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+              <ListChecks className="h-3.5 w-3.5" />
+              كل مهمة والاسكلز المناسبة ليها (وليه اتختارت)
+            </p>
+            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+              {data.tasks.map((t, i) => (
+                <div key={i} className="rounded-xl border border-border/50 bg-accent/10 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 flex-1 truncate text-[11px] font-medium" title={t.query ?? ""}>
+                      {t.query ?? "مهمة بحث"}
+                    </p>
+                    <span className="shrink-0 text-[9px] text-muted-foreground">
+                      {timeAgo(t.at)} • {fmtNum(t.resultCount)} نتيجة
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {t.skills.slice(0, 10).map((s) => (
+                      <span
+                        key={s.platform}
+                        title={`${s.skill ?? s.platform} — ${s.why}${s.queries?.length ? ` — استعلامات: ${s.queries.join(" / ")}` : ""}`}
+                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                          s.aiSmith
+                            ? "bg-amber-500/20 text-amber-500"
+                            : s.weight != null && s.weight >= 3
+                              ? "bg-violet-500/20 text-violet-400"
+                              : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {s.platform}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground">
+                    {t.selectedBy === "ai-selector" ? "انتخاب: AI" : "انتخاب: خريطة المهارات"} • {t.skills[0]?.why}
+                    {t.skills.length > 1 ? ` +${t.skills.length - 1} سبب لكل منصة (حط الماوس على الشارة)` : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
