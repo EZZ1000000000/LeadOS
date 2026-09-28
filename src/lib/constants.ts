@@ -35,6 +35,15 @@ export const SOURCE_TYPES = [
   "DIRECTORY", "JOBS", "MARKETPLACE", "FREELANCE", "ADS_LIBRARY", "REVIEWS",
   "EVENTS", "QUORA", "DISCORD", "OTHER",
 ] as const
+
+// مصادر لوحة التحكم — المنصات كلها ظاهرة دايمًا في الفلتر (حتى اللي لسه عددها صفر)
+// الترتيب: منصات الصيد الـ16 الأول ← المصادر الأساسية (ويب/خرايط) ← القديم (جروبات فيسبوك من عهد المودال)
+export const DASHBOARD_SOURCES: string[] = [
+  "FACEBOOK", "INSTAGRAM", "X", "LINKEDIN", "REDDIT", "TIKTOK", "YOUTUBE",
+  "TELEGRAM", "DIRECTORY", "JOBS", "MARKETPLACE", "FREELANCE", "ADS_LIBRARY",
+  "REVIEWS", "EVENTS", "QUORA", "DISCORD",
+  "WEB", "GOOGLE_MAPS", "GOOGLE_SEARCH", "FACEBOOK_GROUPS",
+]
 export const SOURCE_TYPE_LABELS: Record<string, string> = {
   FACEBOOK: "فيسبوك", LINKEDIN: "لينكدإن", X: "X / تويتر", REDDIT: "ريديت",
   INSTAGRAM: "إنستجرام", TIKTOK: "تيك توك", YOUTUBE: "يوتيوب", TELEGRAM: "تليجرام",

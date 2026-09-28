@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { Search, Plus, Bookmark, Users, Upload, Link2 } from "lucide-react"
-import { LEAD_STATUSES, LEAD_STATUS_LABELS, SOURCE_TYPES, LEAD_SOURCE_TYPE_LABELS, SOURCE_TYPE_LABELS, INTENT_SIGNALS, INTENT_SIGNAL_LABELS, SERVICE_CATALOG, INDUSTRY_CATALOG, serviceAr, industryAr } from "@/lib/constants"
+import { LEAD_STATUSES, LEAD_STATUS_LABELS, SOURCE_TYPES, LEAD_SOURCE_TYPE_LABELS, SOURCE_TYPE_LABELS, INTENT_SIGNALS, INTENT_SIGNAL_LABELS, SERVICE_CATALOG, INDUSTRY_CATALOG, DASHBOARD_SOURCES, serviceAr, industryAr } from "@/lib/constants"
 
 interface LeadRow {
   id: string
@@ -120,7 +120,7 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
         })}
       </div>
 
-      {/* فلتر المنصات الـ16 — من كل منصة بيجيب إيه */}
+      {/* فلتر المنصات الـ16 — كلهم ظاهرين دايمًا حتى اللي لسه عددهم صفر (بشفافية مخففة) */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs font-semibold text-muted-foreground">المصدر:</span>
         <button
@@ -129,15 +129,22 @@ export function LeadsView({ panel, onOpenLead }: { panel: string; onOpenLead: (i
         >
           كل المنصات
         </button>
-        {(data?.facets.platforms ?? []).map((f) => (
-          <button
-            key={f.key}
-            onClick={() => setPlatform(f.key)}
-            className={`rounded-full border px-3 py-1 text-xs transition-colors ${platform === f.key ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"}`}
-          >
-            {SOURCE_TYPE_LABELS[f.key] ?? f.key} ({f.count})
-          </button>
-        ))}
+        {(() => {
+          const facetKeys = (data?.facets.platforms ?? []).map((f) => f.key)
+          const allKeys = [...DASHBOARD_SOURCES, ...facetKeys.filter((k) => !DASHBOARD_SOURCES.includes(k))]
+          return allKeys.map((key) => {
+            const count = data?.facets.platforms.find((f) => f.key === key)?.count ?? 0
+            return (
+              <button
+                key={key}
+                onClick={() => setPlatform(key)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${platform === key ? "border-primary bg-primary/10 font-bold text-primary" : "border-border bg-card hover:border-primary/40"} ${count === 0 && platform !== key ? "opacity-50" : ""}`}
+              >
+                {SOURCE_TYPE_LABELS[key] ?? key} ({count})
+              </button>
+            )
+          })
+        })()}
       </div>
 
       {/* Saved views */}
