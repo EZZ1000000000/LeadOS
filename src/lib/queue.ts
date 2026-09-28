@@ -566,6 +566,7 @@ export async function processTick(
   maxJobs = 6,
   opts?: { fullSweep?: boolean },
 ): Promise<{ processed: number; details: string[]; scheduledRules: number }> {
+  const details: string[] = []
   // 0) Recover stale RUNNING jobs (worker crashed mid-job)
   await db.job.updateMany({
     where: { status: "RUNNING", lockedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } },
@@ -591,6 +592,26 @@ export async function processTick(
     })
     if (revived.count) console.log(`[tick] revived ${revived.count} stale RUNNING job(s)`)
   } catch { /* best-effort */ }
+
+  // 0.7) حصاد GitSkills (دمج قاعدة 3.8M مهارة): مرة كل 4 ساعات — في بداية النبضة
+  // عشان أولوية الـdiscovery العالية ما تأكلش عليه لو اتحط في الآخر. بتاعه 15-30s بس،
+  // وجوبات الـdiscovery ليها ديدلاين خاص بيها بتتعامل مع التأخير بأمان.
+  try {
+    const recentHarvest = await db.job.findFirst({
+      where: { type: "GIT_SKILLS_HARVEST", createdAt: { gte: new Date(Date.now() - 4 * 3600_000) } },
+      select: { id: true, status: true, result: true },
+    })
+    if (!recentHarvest) {
+      const ws = await db.workspace.findFirst({ where: { isActive: true }, select: { id: true } })
+      if (ws) {
+        const job = await enqueueJob(ws.id, "GIT_SKILLS_HARVEST", {}, 15)
+        await db.job.update({ where: { id: job.id }, data: { status: "RUNNING", startedAt: new Date(), lockedAt: new Date(), workerId: "inline-harvest", attempts: { increment: 1 } } })
+        const h = await harvestGitSkills()
+        await db.job.update({ where: { id: job.id }, data: { status: "SUCCESS", completedAt: new Date(), result: { message: `added=${h.added} checked=${h.checked} — ${h.note}` } as Prisma.InputJsonValue } })
+        if (h.added) details.push(`GIT_SKILLS: ${h.note}`)
+      }
+    }
+  } catch { /* الحصاد best-effort — ميفشّلش النبضة */ }
 
   // 1) Scheduler: enqueue due rules (every tick checks; jobs are cheap and idempotent)
   const rules = await db.searchRule.findMany({ where: { enabled: true }, orderBy: { priority: "desc" } })
@@ -634,7 +655,6 @@ export async function processTick(
   // 2) Process queued jobs — واحد واحد مع ميزانية وقت إجمالية:
   // الـtick ليه maxDuration=120s — لو جوب أكل الوقت، متبدأش جوب تاني يموت نصه
   const tickStart = Date.now()
-  const details: string[] = []
   let processed = 0
   for (let i = 0; i < maxJobs; i++) {
     if (i > 0 && Date.now() - tickStart > DISCOVERY_TIME_BUDGET_MS - 30_000) {
@@ -711,18 +731,15 @@ export async function processTick(
     details.push("SOURCE_EVALUATION scheduled")
   }
 
-  // 6) حصاد GitSkills (دمج قاعدة 3.8M مهارة): جوب مجدول كل 4 ساعات — بيتعالج في نبضة فاضية
-  // (كجوب بياخد ميزانيته الخاصة — مش بيموت لو النبضة زحمة)
-  const lastHarvest = await db.job.findFirst({
-    where: { type: "GIT_SKILLS_HARVEST", createdAt: { gte: new Date(Date.now() - 4 * 3600_000) } },
-    select: { id: true },
+  // 6) سجل الحصاد: آخر نتيجة GIT_SKILLS_HARVEST (التنفيذ نفسه في 0.7 أعلاه)
+  const lastHarvestDone = await db.job.findFirst({
+    where: { type: "GIT_SKILLS_HARVEST", status: "SUCCESS" },
+    orderBy: { createdAt: "desc" },
+    select: { result: true, completedAt: true },
   })
-  if (!lastHarvest) {
-    const wsIds = await db.workspace.findMany({ where: { isActive: true }, select: { id: true }, take: 1 })
-    if (wsIds.length) {
-      await enqueueJob(wsIds[0].id, "GIT_SKILLS_HARVEST", {}, 15, new Date(Date.now() + 90_000))
-      details.push("GIT_SKILLS_HARVEST scheduled")
-    }
+  if (lastHarvestDone?.completedAt && Date.now() - lastHarvestDone.completedAt.getTime() < 4 * 3600_000) {
+    const msg = (lastHarvestDone.result as { message?: string } | null)?.message
+    if (msg && !details.some((d) => d.startsWith("GIT_SKILLS"))) details.push(`GIT_SKILLS: ${msg.slice(0, 120)}`)
   }
 
   return { processed, details, scheduledRules }
