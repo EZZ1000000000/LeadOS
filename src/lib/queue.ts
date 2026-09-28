@@ -598,7 +598,7 @@ export async function processTick(
   // وجوبات الـdiscovery ليها ديدلاين خاص بيها بتتعامل مع التأخير بأمان.
   try {
     const recentHarvest = await db.job.findFirst({
-      where: { type: "GIT_SKILLS_HARVEST", createdAt: { gte: new Date(Date.now() - 4 * 3600_000) } },
+      where: { type: "GIT_SKILLS_HARVEST", createdAt: { gte: new Date(Date.now() - 4 * 3600_000) }, status: { in: ["SUCCESS", "RUNNING"] } },
       select: { id: true, status: true, result: true },
     })
     if (!recentHarvest) {
