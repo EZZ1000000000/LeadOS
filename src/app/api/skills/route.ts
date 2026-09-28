@@ -1,15 +1,16 @@
-// LeadOS — حالة عقل المهارات (SkillStat + SkillLesson + كتالوج SKILL.md)
+// LeadOS — حالة عقل المهارات (SkillStat + SkillLesson + كتالوج SKILL.md + خريطة المهارات + GitSkills)
 import { db } from "@/lib/db"
 import { json, requireAuth, isResponse } from "@/lib/api-helpers"
 import { SKILLS } from "@/lib/skills/registry"
 import { aiProviderStatus } from "@/lib/ai"
+import { buildSkillGraph } from "@/lib/skills/graph"
 
 export async function GET() {
   const auth = await requireAuth()
   if (isResponse(auth)) return auth
   const wsId = auth.workspace.id
 
-  const [stats, lessons, recentSearchJobs] = await Promise.all([
+  const [stats, lessons, recentSearchJobs, graph, gitTop, gitAgg] = await Promise.all([
     db.skillStat.findMany({ where: { workspaceId: wsId }, orderBy: { weight: "desc" } }),
     db.skillLesson.findMany({
       where: { workspaceId: wsId },
@@ -22,6 +23,9 @@ export async function GET() {
       take: 20,
       select: { metadata: true, createdAt: true },
     }),
+    buildSkillGraph(wsId).catch(() => ({ nodes: [], links: [], builtAt: null })),
+    db.gitSkill.findMany({ orderBy: [{ weight: "desc" }, { relevance: "desc" }], take: 8 }),
+    db.gitSkill.aggregate({ _count: { id: true }, _max: { createdAt: true } }).catch(() => null),
   ])
 
   // آخر قرار انتخاب من ميتاداتا الجوبات (weights ولا ai-selector)
@@ -62,6 +66,23 @@ export async function GET() {
       createdAt: l.createdAt,
     })),
     lastSelection,
+    // خريطة المهارات (skill-map): عقد ووصلات حية من الاستخدام الحقيقي
+    graph,
+    // مكتبة GitSkills العالمية (3.8M مهارة — المحصود منها هنا)
+    git: {
+      total: gitAgg?._count.id ?? 0,
+      lastHarvestAt: gitAgg?._max.createdAt ?? null,
+      top: gitTop.map((g) => ({
+        name: g.name,
+        repo: g.repo,
+        description: g.description.slice(0, 160),
+        tags: g.tags,
+        relevance: g.relevance,
+        weight: g.weight,
+        useCount: g.useCount,
+        leadCount: g.leadCount,
+      })),
+    },
     ai: {
       dahl: ai.dahl.active,
       nvidia: ai.hasKey,

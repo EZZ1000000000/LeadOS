@@ -124,6 +124,29 @@ model SkillLesson {
   @@index([platform, quality])
 }
 
+// GitSkill: مهارة محصودة من قاعدة GitSkills العالمية (3,797,117 ملف SKILL.md على HuggingFace —
+// داتابيز MSR'27: كل مهارة مفتوحة على GitHub بصيغة Anthropic). مكتبة عالمية مشتركة (من غير workspace)
+// — الحصاد عشوائي موجه بالكلمات المفتاحية، والتعلم بيرفع وزن اللي بيجيب ليدز.
+model GitSkill {
+  id          String   @id @default(cuid())
+  repo        String
+  path        String
+  name        String
+  description String   @default("")
+  body        String   @default("") // أول ~2500 حرف من توجيهات المهارة
+  tags        String   @default("") // كلمات مفتاحية مفصولة بفواصل (منصات + تخصصات)
+  relevance   Float    @default(0) // درجة الصلة بالصيد عند الحصاد
+  useCount    Int      @default(0) // مرات الدخول في برومبتات الـAI
+  leadCount   Int      @default(0) // ليدز نزلت وأنا حاضر في السياق
+  weight      Float    @default(1.0)
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([repo, path])
+  @@index([relevance])
+}
+
 model WorkspaceMember {
   id          String   @id @default(cuid())
   workspaceId String

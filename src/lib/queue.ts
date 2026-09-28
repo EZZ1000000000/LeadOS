@@ -13,6 +13,8 @@ import { enrollLead, processDueEnrollments, reactivationSweep } from "@/lib/sequ
 import { PLATFORM_SITES, PLATFORM_QUERY_SHAPES } from "@/lib/discovery"
 import { skillStatsSnapshot, recordSkillRun, recordSkillResults, recordSkillDryRun, recordSkillNoLeads, recordSkillLead, recordLesson } from "@/lib/skills/learning"
 import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
+import { graphPlatformPriorities } from "@/lib/skills/graph"
+import { harvestGitSkills } from "@/lib/skills/gitskills"
 
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 /** ميزانية وقت الجوبة الواحدة — لازم تخلص قبل maxDuration=120 بتاع الـtick */
@@ -88,8 +90,23 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
   const declared = payload.sourceTypes ?? asArray(rule?.sourceTypes)
   const niche = (plan.queries[0] ?? "عملاء في مصر").trim()
   const stats = await skillStatsSnapshot(wsId).catch(() => ({} as Record<string, { leads: number; runs: number; weight: number }>))
-  const weighted: Record<string, number> = Object.fromEntries(Object.entries(stats).map(([p, s]) => [p, s.weight]))
-  let selectedBy = "learned-weights"
+  // ═══ خريطة المهارات (skill-map): الأولويات من الجراف الحتمي — بيشتغل كل نبضة من غير ما يوقع ═══
+  // الجراف = وزن متعلم × تكتيكات GitSkills المرتبطة × شركاء co-use المنتِجين × صلة النيش من الدروس
+  const graphPriorities = await graphPlatformPriorities(wsId, niche).catch(() => ({}) as Record<string, number>)
+  const weighted: Record<string, number> = {}
+  const allPlatforms = Object.keys(PLATFORM_SITES)
+  for (const p of allPlatforms) {
+    const learned = stats[p]?.weight ?? 1
+    const graph = graphPriorities[p] ?? learned
+    // الدمج: 40% وزن متعلم مباشر + 60% قراءة الجراف (التكتيكات + الشركاء + صلة النيش)
+    weighted[p] = Math.round((learned * 0.4 + graph * 0.6) * 100) / 100
+  }
+  let selectedBy = "skill-graph"
+  // حق الجعان: مصادر صفر ليدز (أو أقدم ليد) بياخدوا مقعد الدوران مضمون — الاستكشاف ميتوقفش
+  const starved = allPlatforms
+    .filter((p) => (stats[p]?.leads ?? 0) === 0)
+    .sort((a, b) => (stats[a]?.runs ?? 0) - (stats[b]?.runs ?? 0))
+    .slice(0, 3)
   try {
     const free = ["REDDIT", "TELEGRAM", "RSS"]
     const declaredSet = new Set(declared.filter(Boolean))
@@ -99,8 +116,8 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
       for (const [i, p] of picks.entries()) weighted[p] = Math.max(weighted[p] ?? 1, 5 - i)
       selectedBy = "ai-selector"
     }
-  } catch { /* الـAI وقع — الأوزان المتعلمة تكفي */ }
-  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted })
+  } catch { /* الـAI وقع — جراف المهارات والأوزان المتعلمة تكفي */ }
+  const sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted, starved })
   // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
   // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
   let queries = plan.queries
@@ -613,6 +630,7 @@ export async function processTick(
   // الـtick ليه maxDuration=120s — لو جوب أكل الوقت، متبدأش جوب تاني يموت نصه
   const tickStart = Date.now()
   const details: string[] = []
+  let processed = 0
   for (let i = 0; i < maxJobs; i++) {
     if (i > 0 && Date.now() - tickStart > DISCOVERY_TIME_BUDGET_MS - 30_000) {
       details.push(`tick time budget: وقفنا بعد ${i} جوب — الباقي النبضة الجاية`)
@@ -621,6 +639,7 @@ export async function processTick(
     const jobs = await claimJobs(1)
     if (!jobs.length) break
     const job = jobs[0]
+    processed++
     try {
       let result = ""
       if (job.type === "DISCOVERY") result = await processDiscoveryJob(job.id)
@@ -686,5 +705,14 @@ export async function processTick(
     details.push("SOURCE_EVALUATION scheduled")
   }
 
-  return { processed: jobs.length, details, scheduledRules }
+  // 6) حصاد GitSkills (دمج قاعدة 3.8M مهارة): مقيد بـ4 ساعات + ميزانية زمن صارمة
+  // — بيحصل بعد الجوبات عشان لو الحصاد اتبطّأ ميمسّحش النبضة. فشله صامت تمامًا.
+  try {
+    if (Date.now() - tickStart < DISCOVERY_TIME_BUDGET_MS - 40_000) {
+      const h = await harvestGitSkills()
+      if (h.added) details.push(`GIT_SKILLS: ${h.note}`)
+    }
+  } catch { /* الحصاد best-effort */ }
+
+  return { processed, details, scheduledRules }
 }

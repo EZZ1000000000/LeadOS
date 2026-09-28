@@ -655,7 +655,7 @@ export const FREE_SOURCE_TYPES = ["REDDIT", "TELEGRAM", "RSS"] as const
  * 2) موجة 4 منصات بالساعة — مع أوزان متعلمة (weighted): المنتِج بيتقدم والأعور بيتأخر
  * كده زيزو بيصطاد على كل المصادر بدون أي تعديل على قواعد الداتابيز.
  */
-export function expandSourceTypes(types: string[], opts?: { all?: boolean; weighted?: Record<string, number> }): string[] {
+export function expandSourceTypes(types: string[], opts?: { all?: boolean; weighted?: Record<string, number>; starved?: string[] }): string[] {
   const base = types.filter(Boolean)
   const used = new Set(base)
   const all = Object.keys(PLATFORM_SITES)
@@ -677,16 +677,30 @@ export function expandSourceTypes(types: string[], opts?: { all?: boolean; weigh
   const start = searchUnused.length ? (hour * 4) % searchUnused.length : 0
   const rotated = searchUnused.length ? [...searchUnused.slice(start), ...searchUnused.slice(0, start)] : []
   const weighted = opts?.weighted
-  const wave = (weighted
+  const byWeight = weighted
     ? [...rotated].sort((a, b) => (weighted[b] ?? 1) - (weighted[a] ?? 1))
     : rotated
-  ).slice(0, 4)
+  // ═══ حق الضعيف (حق الجعان): 3 مقاعد للأقوى وزنًا + مقعد مضمون للجعان (صفر ليدز أطول فترة)
+  // — من غير كده الأوزان المتعلمة بتخنق الاستكشاف والمنصة الصامطة بتنام للأبد.
+  // الجعان بيتحدد من stats الجايين من الجراف (ليدز=0 أو أقدم lastLead) — والدوران بيفضل شغال جواه.
+  const starved = opts?.starved
+  const wave: string[] = []
+  for (const p of byWeight) {
+    if (wave.length >= 3) break
+    if (!starved?.includes(p)) wave.push(p)
+  }
+  if (starved?.length) {
+    const rescue = starved.find((p) => searchUnused.includes(p) && !wave.includes(p))
+    if (rescue) wave.push(rescue)
+  } else {
+    wave.push(byWeight.find((p) => !wave.includes(p)) ?? "")
+  }
 
   // الأنواع الأصلية + حصة الدوران حسب السقف (المصادر المجانية مش بتتحاسب)
   const budget = Math.max(0, MAX_SOURCE_TYPES_PER_JOB - base.length)
   // المجاني الأول: Reddit/Telegram JSON بياخدوا نصيبهم المضمون قبل أي نوع بحث —
   // (لو البحث العام اتخنق بكوتة العناصر، المصادر المجانية تفضل شغالة برضه)
-  return [...freeStrong, ...base, ...wave.slice(0, budget)]
+  return [...freeStrong, ...base, ...wave.filter(Boolean).slice(0, budget)]
 }
 
 // تثبيت جغرافي ذكي: مصر افتراضيًا — إلا لو الاستعلام خليجي (الرياض/دبي...) ساعتها من غير تثبيت
