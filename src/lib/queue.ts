@@ -558,6 +558,20 @@ export async function processTick(
   const rules = await db.searchRule.findMany({ where: { enabled: true }, orderBy: { priority: "desc" } })
   let scheduledRules = 0
   for (const rule of rules) {
+    // نظافة الطابور: القاعدة ليها جوب حي (QUEUED/RUNNING)؟ متزرعش تاني —
+    // (القديم كان بيعتمد على 10 دقايق فقط: الطابور يتزحزح → جوبات جديدة فوق المتراكم = طابور يتضخم بلا نهاية)
+    try {
+      const pending = await db.job.findFirst({
+        where: {
+          workspaceId: rule.workspaceId,
+          type: "DISCOVERY",
+          status: { in: ["QUEUED", "RETRYING", "RUNNING"] },
+          payload: { path: ["ruleId"], equals: rule.id },
+        },
+        select: { id: true },
+      })
+      if (pending) continue
+    } catch { /* sqlite dev — يكمل على حد 10 دقايق تحت */ }
     const recentJobs = await db.job.findMany({
       where: {
         workspaceId: rule.workspaceId,

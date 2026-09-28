@@ -638,7 +638,10 @@ export function platformQueries(platform: string, baseQuery: string, max = 3): s
   const subject = baseQuery.replace(SUBJECT_CLEAN_RE, "").replace(/\s*(مصر|Egypt)$/i, "").trim() || baseQuery
   const hour = Math.floor(Date.now() / 3_600_000)
   const seeds = [shape.seeds[hour % shape.seeds.length], shape.seeds[(hour + 1) % shape.seeds.length]]
-  return [...shape.shape(subject), ...seeds].slice(0, max)
+  // الاستعلام العام الطويل (زي مسح «عملاء محتاجين خدمات رقمية في مصر») بيخلي الأشكال هرج
+  // («مطلوب عملاء محتاجين خدمات رقمية في») — ساعتها البذور المضمونة أذكى من التشكيل
+  const useShape = subject.split(/\s+/).length <= 3
+  return [...(useShape ? shape.shape(subject) : []), ...seeds].slice(0, max)
 }
 
 /** المصادر اللي بتتصطاد بأدوات JSON/HTML مجانية من غير بحث أصلًا — مبتحرقش كوتة البحث */
