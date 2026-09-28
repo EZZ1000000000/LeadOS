@@ -224,13 +224,15 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     }
   })
 
+  // قسمة الميزانية: البحث له سقف خاص — لو أكلها كلها الابتلاع بياخد صفر وكل النتايج بتضيع في الديديب لاحقًا
+  const searchDeadline = jobStart + 35_000
   const { items, adaptersUsed } = await runDiscovery(
     sourceTypes,
     queries,
     payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
     payload.fullSweep
-      ? { maxSearches: 20, passes: 1, queriesByType, deadline }
-      : { queriesByType, deadline },
+      ? { maxSearches: 20, passes: 1, queriesByType, deadline: searchDeadline }
+      : { queriesByType, deadline: searchDeadline },
   )
   const timeLeft = deadline - Date.now()
   // الابتلاع ضمن الميزانية كمان — التصنيف AI بياخد ~3s للعنصر
