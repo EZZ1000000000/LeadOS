@@ -2,7 +2,9 @@
 .env.local
 .env*.local
 # مجلدات مش مطلوبة للنشر
-/skills
+# skills/discovery مطلوب للبناء (gen-skills-manifest بيقراه في كل build)
+/skills/*
+!/skills/discovery
 /agent
 /db
 /download
