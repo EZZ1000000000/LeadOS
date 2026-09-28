@@ -549,7 +549,10 @@ export async function ingestDiscoveredItems(
     const sponsoredAdvertiser = (item.rawData as { advertiser?: string } | null)?.advertiser
     const siteUrl = candidate.websiteUrl
       ?? (sponsoredAdvertiser && /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(sponsoredAdvertiser) ? `https://${sponsoredAdvertiser}` : null)
-      ?? (/^https?:\/\//.test(item.url) && !/facebook\.com|instagram\.com|tiktok\.com|youtu|\.com\/|x\.com|twitter\.com|linkedin\.com|reddit\.com|t\.me|quora\.com|google\./i.test(item.url) && /\.(com|eg|net|org|io|co|shop|store)([\/\?]|$)/i.test(item.url) ? item.url : null)
+      ?? (/^https?:\/\//.test(item.url)
+        && !/facebook\.com|instagram\.com|tiktok\.com|youtu|x\.com|twitter\.com|linkedin\.com|reddit\.com|t\.me|quora\.com|google\.|wikipedia\.org|yellowpages\.com\.eg|egypt-business\.com|mostaql\.com|khamsat\.com|olx\.com\.eg|hatla2ee\.com/i.test(item.url)
+        && /\.(com|eg|net|org|io|co|shop|store)([\/\?]|$)/i.test(item.url)
+        ? item.url : null)
     if (siteUrl && pixelScans < PIXEL_SCAN_BUDGET) {
       pixelScans++
       const channels = await detectAdPixels(siteUrl).catch(() => [] as string[])

@@ -6,6 +6,7 @@ import { db } from "@/lib/db"
 import { aiChatJson } from "@/lib/ai"
 import { recomputeLeadScore } from "@/lib/scoring"
 import { asArray } from "@/lib/constants"
+import { detectAdPixels } from "@/lib/discovery"
 
 export const RESEARCH_STAGES = [
   "identity", "maps", "website", "social", "reviews", "competitors", "final",
@@ -219,6 +220,30 @@ export async function runDeepResearch(
       evidenceQuote: website.description ?? undefined,
     })
     if (issues.length) allOpportunities.add("website")
+    // ═══ فحص البيكسلات الإعلانية الحية (سرقة إعلانات المنافسين — دليل مباشر) ═══
+    // موقع فيه بيكسل إعلاني حي = بيصرف فلوس على إعلانات الآن → AD_SPENDER بقنوات مُثبتة
+    const adChannels = await detectAdPixels(website.url).catch(() => [] as string[])
+    if (adChannels.length) {
+      websiteFindings.push({
+        type: "SIGNAL",
+        category: "website",
+        title: "إعلانات ممولة نشطة",
+        statement: `الموقع عليه بيكسلات إعلانية حية (${adChannels.join(" + ")}) — النشاط بيصرف فلوس على إعلانات الآن`,
+        confidence: "HIGH",
+        confidenceScore: 90,
+        sourceUrl: website.url,
+      })
+      const meta = (lead.metadata ?? {}) as Record<string, unknown>
+      const upgradeTo = lead.intentSignal === "EXPLICIT_NEED" || lead.intentSignal === "COMPETITOR_ENGAGER" ? lead.intentSignal : "AD_SPENDER"
+      await db.lead.update({
+        where: { id: leadId },
+        data: {
+          intentSignal: upgradeTo,
+          score: { increment: 8 },
+          metadata: { ...meta, adChannels, adEvidence: "pixel_scan", adSite: website.url.slice(0, 120) },
+        },
+      }).catch(() => undefined)
+    }
   } else if (biz && !biz.websiteUrl) {
     websiteFindings.push({
       type: "OPPORTUNITY",
