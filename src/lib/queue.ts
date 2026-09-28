@@ -120,6 +120,13 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     }
   } catch { /* الـAI وقع — جراف المهارات والأوزان المتعلمة تكفي */ }
   let sourceTypes = expandSourceTypes(declared, { all: Boolean(payload.fullSweep), weighted, starved })
+  // ═══ أولوية الإعلانات في المسح الشامل ═══
+  // سقف البحث (18-20) ممكن يخلص قبل أواخر الموجة بسبب الأدابترز الصامية — فأعلى المنصات نية
+  // (مكتبات الإعلانات + فريلانس + وظايف) بتتصعد أول الموجة — الأولوية بالترتيب مش بالحظ
+  if (payload.fullSweep) {
+    const adsPriority = ["ADS_LIBRARY", "FREELANCE", "JOBS"]
+    sourceTypes = [...adsPriority.filter((p) => sourceTypes.includes(p)), ...sourceTypes.filter((p) => !adsPriority.includes(p))]
+  }
   // سرقة العملاء من المنافسين: لو في منافسين مسجلين، استعلامات «بديل/توصية + المنافس» بتتقدم الأول
   // — اللي بيسأل عن بديل منافس = عميل جاهز للتحويل حالًا
   let queries = plan.queries
@@ -203,7 +210,7 @@ async function processDiscoveryJob(jobId: string): Promise<string> {
     queries,
     payload.fullSweep ? 10 : 4, // المسح الشامل محتاج مساحة أكبر عشان كل منصة تاخد نصيبها
     payload.fullSweep
-      ? { maxSearches: 18, passes: 1, queriesByType, deadline }
+      ? { maxSearches: 20, passes: 1, queriesByType, deadline }
       : { queriesByType, deadline },
   )
   const timeLeft = deadline - Date.now()
