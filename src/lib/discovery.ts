@@ -5,6 +5,7 @@
 // No sample/mock generators: if a platform returns nothing, it returns nothing.
 import type { Prisma } from "@prisma/client"
 import { asArray, seasonFor, EGYPT_GOVERNORATES } from "@/lib/constants"
+import { searchBingViaZenrows } from "@/lib/serp-scrape"
 
 export interface DiscoveredItem {
   externalId: string
@@ -269,7 +270,7 @@ interface WebSearchResult {
   displayedLink?: string
 }
 
-type SearchProvider = "serper" | "tavily" | "serpapi" | "exa" | "searxng" | "zai"
+type SearchProvider = "serper" | "exa" | "zenrows" | "bing" | "tavily" | "serpapi" | "searxng" | "zai"
 
 let preferredProvider: SearchProvider | null = null
 
@@ -394,17 +395,33 @@ async function searchSerpApi(query: string, limit: number, recencyDays: number):
 }
 
 // --- Exa ---
+// ترقية بعد موت كريدت Serper: Exa بيفهم site: من خلال includeDomains (فلتر بنيوي مضمون —
+// بينج بيتجاهل site: من سيرفرات الداتا سنتر، لكن Exa بيدومينات حرفيًا بيرجع المنصة الصح 100%)
+function extractSiteDomains(query: string): { domains: string[]; clean: string } {
+  const domains: string[] = []
+  const stripped = query.replace(/\bsite:([^\s)]+)/g, (_, d: string) => {
+    const dom = d.split("/")[0].replace(/^www\./, "")
+    if (dom) domains.push(dom)
+    return " "
+  })
+  const clean = stripped.replace(/[()]/g, " ").replace(/\bOR\b/g, " ").replace(/\s+/g, " ").trim()
+  return { domains: [...new Set(domains)].slice(0, 10), clean }
+}
+
 async function searchExa(query: string, limit: number): Promise<WebSearchResult[]> {
   const key = process.env.EXA_API_KEY
   if (!key) throw new Error("no key")
+  const { domains, clean } = extractSiteDomains(query)
   const data = (await fetchJson("https://api.exa.ai/search", {
     method: "POST",
     headers: { "x-api-key": key, "Content-Type": "application/json" },
     body: JSON.stringify({
-      query,
+      query: clean || query,
       numResults: Math.min(limit, 10),
       type: "auto",
       contents: { text: { maxCharacters: 300 } },
+      // استعلامات المنصة (site:) → فلتر دومينات صريح — بيحل مشكلة Bing اللي بيتجاهل العمليات
+      ...(domains.length ? { includeDomains: domains } : {}),
     }),
   })) as {
     results?: Array<{ title?: string; url?: string; text?: string; publishedDate?: string }>
@@ -477,9 +494,13 @@ async function searchSearx(query: string, limit: number, recencyDays: number): P
 
 const PROVIDER_ORDER: Array<{ name: SearchProvider; run: (q: string, l: number, r: number) => Promise<WebSearchResult[]> }> = [
   { name: "serper", run: searchSerper },
-  { name: "tavily", run: searchTavily },
-  { name: "serpapi", run: searchSerpApi },
+  // exa الأول بعد serper: حي + بيفهم site: بفلتر includeDomains — ده محرك المنصات الأساسي دلوقتي
   { name: "exa", run: (q, l) => searchExa(q, l) },
+  // zenrows→Bing: كريدت 1/طلب، 3 مفاتيح دوران + ميزانية يومية — تغطية ويب عامة (مهم للصيغ من غير site:)
+  { name: "zenrows", run: (q, l) => searchBingViaZenrows(q, l) },
+  // serpapi بعد zenrows: 41 بحث فاضل بس — نحافظ عليهم للطوارئ (بيطلعوا لما zenrows يفشل/يخلص)
+  { name: "serpapi", run: searchSerpApi },
+  { name: "tavily", run: searchTavily },
   { name: "searxng", run: searchSearx },
   { name: "zai", run: searchZai },
 ]
