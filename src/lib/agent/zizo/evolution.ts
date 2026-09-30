@@ -27,7 +27,7 @@ export async function creditTacticWin(wsId: string, family: string, tacticId: st
     await db.tacticStat.upsert({
       where: { workspaceId_family_tacticId: { workspaceId: wsId, family, tacticId } },
       create: { workspaceId: wsId, family, tacticId, used: 1, wins: 1, weight: 1.5, lastUsedAt: new Date(), lastWinAt: new Date() },
-      update: { wins: { increment: 1 }, lastWinAt: new Date() },
+      update: { wins: { increment: 1 }, weight: { increment: 0.5 }, lastWinAt: new Date() },
     })
   } catch {
     /* تجاهل */
