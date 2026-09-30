@@ -246,10 +246,28 @@ export const JOB_TYPES = [
   "REVIEW_ANALYSIS", "EMBEDDING", "ALERT", "AUTOMATION", "REPORT", "CLEANUP",
   "REACTIVATION", "SOURCE_EVALUATION",
 ] as const
-export const JOB_STATUSES = ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "RETRYING", "CANCELLED"] as const
+// WAITING_FOR_CAPABILITY: مهمة متوقفة مؤقتًا لغياب جلسة/قدرة — ليست فشلًا، وبتترجع للطابور تلقائيًا عند توفر الجلسة
+export const JOB_STATUSES = ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "RETRYING", "CANCELLED", "WAITING_FOR_CAPABILITY"] as const
 export const JOB_STATUS_LABELS: Record<string, string> = {
   QUEUED: "في الطابور", RUNNING: "جارٍ", SUCCESS: "نجح",
   FAILED: "فشل", RETRYING: "إعادة محاولة", CANCELLED: "ملغي",
+  WAITING_FOR_CAPABILITY: "منتظر قدرة/جلسة",
+}
+
+// ---- SESSIONLESS MODE: حالات حسابات/جلسات المنصات + أوضاع التشغيل ----
+export const PLATFORM_ACCOUNT_STATUSES = [
+  "NOT_CONFIGURED", "READY", "WARMING", "EXPIRED", "NEEDS_SESSION", "BLOCKED", "ERROR", "PAUSED",
+  "ACTIVE", "COOLDOWN", "DISABLED",
+] as const
+export const PLATFORM_ACCOUNT_STATUS_LABELS: Record<string, string> = {
+  NOT_CONFIGURED: "غير مضبوط", READY: "جاهز", WARMING: "في فترة التهيئة", EXPIRED: "انتهى",
+  NEEDS_SESSION: "محتاج جلسة", BLOCKED: "محجوب", ERROR: "به خطأ", PAUSED: "موقوف",
+  ACTIVE: "نشط", COOLDOWN: "تبريد", DISABLED: "معطل",
+}
+export const RUNTIME_MODES = ["FULL", "SESSIONLESS", "DEGRADED", "STOPPED"] as const
+export const RUNTIME_MODE_LABELS: Record<string, string> = {
+  FULL: "تشغيل كامل (جلسات + عام)", SESSIONLESS: "بدون جلسات (المسارات العامة)",
+  DEGRADED: "متدهور (بعض الجلسات معطوبة)", STOPPED: "موقوف",
 }
 
 export const RULE_ACTION_TYPES = [

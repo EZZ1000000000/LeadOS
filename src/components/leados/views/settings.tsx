@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import { Bot, KeyRound, Globe, Cloud, ServerCog, Users2, Copy, Building2 } from "lucide-react"
+import { SessionsCard } from "./sessions"
 import { USER_ROLE_LABELS } from "@/lib/constants"
 
 interface SettingsData {
@@ -59,6 +60,9 @@ export function SettingsView({ me }: { me: Me }) {
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
+      {/* Platform Sessions Onboarding — SESSIONLESS MODE */}
+      <SessionsCard />
+
       {/* AI Providers */}
       <Card className="border-border/70">
         <CardHeader className="pb-2">

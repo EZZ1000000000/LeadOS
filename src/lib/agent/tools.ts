@@ -48,21 +48,39 @@ function htmlToText(html: string): string {
     .trim()
 }
 
+// LeadOS — أدوات الأيجنت (DSI/Skills layer)
+import { sessionCookieOf } from "@/lib/capabilities"
+import { fetchReadable } from "@/lib/jina"
+
+/**
+ * جلب صفحة مباشرة — SESSIONLESS: لو فشل/ناقص/جدار دخول → Jina Reader تلقائيًا (طلب §15)
+ * لا تسجيل دخول ولا تجاوز حماية — Jina قارئ عام فقط.
+ */
 async function fetchPage(url: string, timeoutMs = 12000): Promise<{ ok: boolean; status: number; html: string }> {
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
-        "Accept-Language": "ar,en;q=0.8",
-      },
-      redirect: "follow",
-    })
-    const html = await res.text()
-    return { ok: res.ok, status: res.status, html }
-  } catch {
-    return { ok: false, status: 0, html: "" }
-  }
+  const direct = await (async (): Promise<{ ok: boolean; status: number; html: string }> => {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+          "Accept-Language": "ar,en;q=0.8",
+        },
+        redirect: "follow",
+      })
+      const html = await res.text()
+      return { ok: res.ok, status: res.status, html }
+    } catch {
+      return { ok: false, status: 0, html: "" }
+    }
+  })()
+  // كفاية من الجلب المباشر؟
+  const enough = direct.ok && direct.html.trim().length >= 600 && !/log in to continue|sign in to continue|authwall|login_form/i.test(direct.html.slice(0, 3000))
+  if (enough) return direct
+  // fallback: Jina Reader (Markdown نظيف) — نجاحه بيرجع كنص html-less مقبول للمحللات
+  const r = await fetchReadable(url, { minChars: 200, directTimeoutMs: timeoutMs })
+  if (r.ok && r.via === "jina") return { ok: true, status: 200, html: r.text }
+  // NEEDS_SESSION/ERROR → نرجع نتيجة الجلب المباشر الأصلية (الحالة مفهومة للمستدعي)
+  return direct
 }
 
 export function extractContacts(text: string): { emails: string[]; phones: string[]; socials: string[] } {
@@ -307,10 +325,15 @@ export const AGENT_TOOLS: AgentTool[] = [
       if (!ready) {
         return { ok: false, note: "خدمة Camoufox مش متاحة — محتاجة سيرفر يشتغل عليه المتصفح (محليًا بتتشغل تلقائيًا، وعلى Vercel اضبط CAMOUFOX_URL)" }
       }
-      // حقن كوكيز جلسة فيسبوك لو موجودة (مرة واحدة لكل تشغيل)
-      if (String(args.inject_fb_session ?? "") === "1" && process.env.FACEBOOK_SESSION_COOKIE) {
-        const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
-        if (injected) return { ok: true, note: "تم حقن كوكيز فيسبوك في بروفايل المتصفح" }
+      // حقن كوكيز جلسة فيسبوك لو موجودة (مرة واحدة لكل تشغيل) — SESSIONLESS: من طبقة القدرات (DB مشفرًا ثم env)
+      if (String(args.inject_fb_session ?? "") === "1") {
+        const { cookie: fbCookie } = await sessionCookieOf("FACEBOOK")
+        if (fbCookie) {
+          const injected = await stealthInjectCookieHeader(fbCookie)
+          if (injected) return { ok: true, note: "تم حقن كوكيز فيسبوك في بروفايل المتصفح" }
+        } else {
+          return { ok: false, note: "لا توجد جلسة فيسبوك مضافة — مفيش حقن، والمسار العام شغال (NEEDS_SESSION للعمليات الموثقة)" }
+        }
       }
       if (action === "goto") {
         if (!/^https?:\/\//.test(url)) return { ok: false, note: "URL غير صالح" }
@@ -363,8 +386,8 @@ export const AGENT_TOOLS: AgentTool[] = [
         return { ok: r.ok, note: r.ok ? r.note ?? "تم التنفيذ" : `فشل: ${r.error}`, data: r.result }
       }
       if (action === "cookies") {
-        const header = String(args.cookie_header ?? "") || process.env.FACEBOOK_SESSION_COOKIE || ""
-        if (!header) return { ok: false, note: "لا يوجد cookie_header ولا FACEBOOK_SESSION_COOKIE" }
+        const header = String(args.cookie_header ?? "") || (await sessionCookieOf(String(args.domain ?? ".facebook.com").includes("facebook") ? "FACEBOOK" : "FACEBOOK")).cookie || ""
+        if (!header) return { ok: false, note: "لا توجد جلسة (cookie_header فارغ ولا جلسة مخزنة) — عمليات المصادقة = NEEDS_SESSION" }
         const okDone = await stealthInjectCookieHeader(header, String(args.domain ?? ".facebook.com"))
         return { ok: okDone, note: okDone ? "تم حقن الكوكيز في المتصفح" : "فشل الحقن" }
       }

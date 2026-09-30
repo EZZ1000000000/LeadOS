@@ -6,6 +6,7 @@ import { db } from "@/lib/db"
 import { classifyPost, scoreGroupName, type Segment } from "./segments"
 import { fetchGroupPosts, parseGroupInput, type RawPost } from "./fetchers"
 import { agentWebSearch } from "@/lib/discovery"
+import { sessionCookieOf } from "@/lib/capabilities"
 
 const SCAN_COOLDOWN_MS = 15 * 60 * 1000 // جروب ميتمسحش أكتر من مرة كل 15 دقيقة
 
@@ -135,8 +136,10 @@ export async function scanGroup(group: {
 
 /** مسح كل الجروبات المستحقة (cooldown 15 دقيقة) — للـcron والزر اليدوي */
 export async function scanDueGroups(workspaceId: string, limit = 3): Promise<ScanOutcome[]> {
-  // لو مفيش جلسة فيسبوك ولا Apify — استبعد جروبات فيسبوك عشان متزنقش الطابور
-  const fbCapable = Boolean(process.env.FACEBOOK_SESSION_COOKIE || process.env.APIFY_TOKEN)
+  // SESSIONLESS: لو مفيش جلسة فيسبوك (DB/env) ولا Apify — استبعد جروبات فيسبوك عشان متزنقش الطابور،
+  // والمسح يكمل عادي على تليجرام/ريديت/X — غياب الجلسة مش بيوقف الاكتشاف (طلب §20)
+  const { cookie: fbSession } = await sessionCookieOf("FACEBOOK")
+  const fbCapable = Boolean(fbSession || process.env.APIFY_TOKEN)
   const due = await db.monitoredGroup.findMany({
     where: {
       workspaceId,

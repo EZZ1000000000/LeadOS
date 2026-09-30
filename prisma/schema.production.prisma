@@ -93,19 +93,25 @@ model EvolutionProposal {
 }
 
 model PlatformAccount {
-  id            String    @id @default(cuid())
-  workspaceId   String
-  platform      String // WHATSAPP | FACEBOOK | INSTAGRAM | TELEGRAM | LINKEDIN | X
-  handle        String
-  label         String?
-  status        String    @default("WARMING") // WARMING | ACTIVE | COOLDOWN | BLOCKED | DISABLED
-  dailyLimit    Int       @default(20)
-  sentToday     Int       @default(0)
-  lastSentAt    DateTime?
-  cooldownUntil DateTime?
-  notes         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  workspaceId    String
+  platform       String // WHATSAPP | FACEBOOK | INSTAGRAM | TELEGRAM | LINKEDIN | X | TIKTOK | DISCORD | REDDIT | YOUTUBE
+  handle         String
+  label          String?
+  kind           String    @default("OUTBOX") // OUTBOX (حساب إرسال) | SESSION (جلسة/كوكي تصفح — مشفّرة)
+  status         String    @default("WARMING") // WARMING | ACTIVE | COOLDOWN | BLOCKED | DISABLED | NOT_CONFIGURED | READY | EXPIRED | NEEDS_SESSION | ERROR | PAUSED
+  dailyLimit     Int       @default(20)
+  sentToday      Int       @default(0)
+  lastSentAt     DateTime?
+  cooldownUntil  DateTime?
+  sessionCipher  String? // كوكي الجلسة مشفر AES-256-GCM — لا يُعرض أو يُسجل أبدًا كنص صريح
+  sessionMeta    Json? // وصف/فحص الجلسة فقط — بدون قيمة السر
+  lastVerifiedAt DateTime? // آخر فحص صحة للجلسة
+  expiresAt      DateTime? // انتهاء متوقع للجلسة
+  lastError      String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   conversation   Conversation? @relation(fields: [conversationId], references: [id])
@@ -113,6 +119,14 @@ model PlatformAccount {
 
   @@unique([workspaceId, platform, handle])
   @@index([workspaceId, platform, status])
+  @@index([platform, kind])
+}
+
+/// حالة النظام العامة — مفتاح/قيمة (وضع التشغيل، مفتاح الإيقاف العام)
+model SystemState {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }
 
 model TacticStat {

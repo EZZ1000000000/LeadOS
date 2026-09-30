@@ -1,6 +1,7 @@
 "use client";
 // LeadOS — Overview dashboard (doc §48.1)
 import { useApi, apiSend, fmtNum, timeAgo, ScoreBadge, TempBadge, StatusBadge, SourceBadge, LoadingBlock, EmptyState, type ViewKey } from "../shared"
+import { PlatformMatrixCard } from "./platform-matrix"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -72,6 +73,9 @@ export function OverviewView({ panel, onOpenLead, onGoTo }: { panel: string; onO
 
       {/* عقل المهارات — التعلم والانتقاء الحي */}
       <SkillsBrainCard />
+
+      {/* Platform Capability Matrix — SESSIONLESS MODE */}
+      <PlatformMatrixCard />
 
       <div className="grid gap-4 xl:grid-cols-3">
         {/* Top leads */}

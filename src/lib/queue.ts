@@ -621,6 +621,29 @@ async function processResearchJob(jobId: string): Promise<string> {
   return "research completed"
 }
 
+// ══════════ SESSIONLESS MODE: انتظار القدرة بدل الفشل (طلب §26) ══════════
+// مهمة بتعتمد على جلسة مش موجودة → WAITING_FOR_CAPABILITY (مش FAILED) — وبتترجع QUEUED تلقائيًا عند وصول الجلسة
+const SESSION_MISSING_RE = /NEEDS_SESSION|session.*missing|missing.*session|لا يوجد.*SESSION|جلسة.*(موجودة|صالحة)|FACEBOOK_SESSION_COOKIE|_SESSION_COOKIE|session expired|الجلسة انتهت|الجلسة مش قادرة/i
+
+function isSessionMissingError(msg: string): boolean {
+  return SESSION_MISSING_RE.test(msg.slice(0, 500))
+}
+
+async function parkJobForCapability(jobId: string, platform: string | null, reason: string): Promise<void> {
+  const job = await db.job.findUnique({ where: { id: jobId }, select: { payload: true } })
+  // ندمج المنصة داخل الـ payload الأصلي — ممنوع تدويره (بيحتوي ruleId/sourceId اللي المهمة محتاجاه عند العودة)
+  const merged = { ...((job?.payload ?? {}) as Record<string, unknown>), ...(platform ? { platform } : {}) }
+  await db.job.update({
+    where: { id: jobId },
+    data: {
+      status: "WAITING_FOR_CAPABILITY",
+      payload: merged as Prisma.InputJsonValue,
+      errorMessage: reason.slice(0, 400),
+      completedAt: null,
+    },
+  })
+}
+
 // ══════════ الموجة الجديدة: إعادة التفعيل + التقييم الذاتي للمصادر ══════════
 
 async function processReactivationJob(jobId: string): Promise<string> {
@@ -808,6 +831,15 @@ export async function processTick(
       })
       details.push(`${job.type}: ${result}`)
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // فشل بسبب غياب جلسة؟ → انتظار قدرة (مش فشل) — النظام كله يكمل
+      if (isSessionMissingError(msg)) {
+        const platform = (job.payload as { platform?: string } | null)?.platform
+          ?? (msg.match(/(FACEBOOK|INSTAGRAM|LINKEDIN|X|TIKTOK|DISCORD|TELEGRAM|REDDIT|YOUTUBE)_SESSION_COOKIE/i)?.[1]?.replace("_SESSION_COOKIE", "") ?? null)
+        await parkJobForCapability(job.id, platform, `منتظر جلسة: ${msg.slice(0, 250)}`)
+        details.push(`${job.type}: WAITING_FOR_CAPABILITY (${msg.slice(0, 100)})`)
+        continue
+      }
       const attempts = job.attempts + 1
       const permanent = attempts >= job.maxAttempts
       await db.job.update({
@@ -815,11 +847,11 @@ export async function processTick(
         data: {
           status: permanent ? "FAILED" : "RETRYING",
           completedAt: permanent ? new Date() : null,
-          errorMessage: err instanceof Error ? err.message.slice(0, 400) : String(err).slice(0, 400),
+          errorMessage: msg.slice(0, 400),
           scheduledAt: new Date(Date.now() + Math.min(600000, 60000 * Math.pow(2, attempts))), // exponential backoff
         },
       })
-      details.push(`${job.type}: FAILED (${err instanceof Error ? err.message.slice(0, 120) : err})`)
+      details.push(`${job.type}: FAILED (${msg.slice(0, 120)})`)
     }
   }
   // 3) سلاسل المتابعة: معالجة الخطوات المستحقة (لكل ورشة عليها مستحق)
@@ -860,16 +892,25 @@ export async function processTick(
     details.push("SOURCE_EVALUATION scheduled")
   }
 
-  // 6) سجل الحصاد: آخر نتيجة GIT_SKILLS_HARVEST (التنفيذ نفسه في 0.7 أعلاه)
-  const lastHarvestDone = await db.job.findFirst({
-    where: { type: "GIT_SKILLS_HARVEST", status: "SUCCESS" },
-    orderBy: { createdAt: "desc" },
-    select: { result: true, completedAt: true },
-  })
-  if (lastHarvestDone?.completedAt && Date.now() - lastHarvestDone.completedAt.getTime() < 4 * 3600_000) {
-    const msg = (lastHarvestDone.result as { message?: string } | null)?.message
-    if (msg && !details.some((d) => d.startsWith("GIT_SKILLS"))) details.push(`GIT_SKILLS: ${msg.slice(0, 120)}`)
-  }
+  // 6) SESSIONLESS: إحياء المهام المنتظرة لو الجلسة وصلت (كل نبضة — رخيصة: استعلام واحد بس لو في منتظرين)
+  try {
+    const waiting = await db.job.count({ where: { status: "WAITING_FOR_CAPABILITY" } })
+    if (waiting > 0) {
+      const { requeueWaitingJobs } = await import("@/lib/capabilities")
+      const requeued = await requeueWaitingJobs()
+      if (requeued) details.push(`CAPABILITY_RESUME: ${requeued} مهام رجعت للطابور بعد وصول الجلسة`)
+    }
+  } catch { /* آمن — لا يوقف النبضة */ }
 
-  return { processed, details, scheduledRules }
+  return { processed: jobs.length, details, scheduledRules }
+
+  // 6-ب) SESSIONLESS: إحياء المهام المنتظرة لو الجلسة وصلت (رخيص: استعلام واحد بس لو في منتظرين)
+  try {
+    const waiting = await db.job.count({ where: { status: "WAITING_FOR_CAPABILITY" } })
+    if (waiting > 0) {
+      const { requeueWaitingJobs } = await import("@/lib/capabilities")
+      const requeued = await requeueWaitingJobs()
+      if (requeued) details.push(`CAPABILITY_RESUME: ${requeued} مهام رجعت للطابور بعد وصول الجلسة`)
+    }
+  } catch { /* آمن — لا يوقف النبضة */ }
 }

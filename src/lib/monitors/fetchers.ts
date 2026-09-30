@@ -7,6 +7,7 @@
 
 import { agentWebSearch, parseSearchDate } from "@/lib/discovery"
 import { stealthExtract, stealthInjectCookieHeader, stealthNavigate } from "@/lib/agent/stealth-browser"
+import { sessionCookieOf } from "@/lib/capabilities"
 
 export interface RawPost {
   externalId?: string
@@ -64,9 +65,10 @@ function stripHtml(s: string): string {
  * لو فيسبوك رد بجدار تسجيل دخول → NEEDS_SESSION (الكوكي انتهى أو الحساب اتحجز).
  */
 async function fetchFacebookDirect(externalId: string, membersWanted: boolean): Promise<FetchResult> {
-  const cookie = process.env.FACEBOOK_SESSION_COOKIE
+  // SESSIONLESS: الجلسة من قاعدة البيانات (مشفّرة) أولًا ثم env — وغيابها حالة آمنة NEEDS_SESSION
+  const { cookie } = await sessionCookieOf("FACEBOOK")
   if (!cookie) {
-    return { posts: [], status: "NEEDS_SESSION", note: "لا يوجد FACEBOOK_SESSION_COOKIE — ضيف كوكي جلسة مسجلة من الإعدادات" }
+    return { posts: [], status: "NEEDS_SESSION", note: "لا توجد جلسة فيسبوك (قاعدة البيانات/env) — أضف جلسة من الإعدادات، والمسار العام مكمل شغال" }
   }
   const res = await fetch(`https://www.facebook.com/groups/${encodeURIComponent(externalId)}/posts/`, {
     headers: {
@@ -172,13 +174,16 @@ async function fetchFacebookStealth(groupUrl: string): Promise<FetchResult> {
   // جدار دخول؟ حقن كوكيز الجلسة وإعادة محاولة واحدة
   const finalUrl = nav.url ?? ""
   const loginWall = /login|checkpoint/i.test(finalUrl) || /تسجيل الدخول|log in to Facebook/i.test(nav.text ?? "")
-  if (loginWall && process.env.FACEBOOK_SESSION_COOKIE) {
-    const injected = await stealthInjectCookieHeader(process.env.FACEBOOK_SESSION_COOKIE)
-    if (injected) {
-      const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4, session: "fb" })
-      if (retry.ok) {
-        nav.url = retry.url
-        nav.text = retry.text
+  if (loginWall) {
+    const { cookie: sess } = await sessionCookieOf("FACEBOOK")
+    if (sess) {
+      const injected = await stealthInjectCookieHeader(sess)
+      if (injected) {
+        const retry = await stealthNavigate({ url: groupUrl, wait_until: "domcontentloaded", timeout: 60_000, scroll_times: 4, session: "fb" })
+        if (retry.ok) {
+          nav.url = retry.url
+          nav.text = retry.text
+        }
       }
     }
   }
