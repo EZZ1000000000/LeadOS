@@ -4,8 +4,8 @@
 #  this local loop is the real 15-min cadence until the GitHub account is unblocked)
 cd /home/z/my-project || exit 1
 mkdir -p db/backups
-SECRET=$(grep '^CRON_SECRET_ALT=' scripts/deploy/.tokens | cut -d= -f2- | tr -d '"')
-BASE="https://leados-v2.vercel.app"
+SECRET=$(grep '^CRON_SECRET=' .env.local | cut -d= -f2- | tr -d '"')
+BASE="https://leados-olive.vercel.app"
 while true; do
   code=$(curl -s -o /tmp/tick-prod.json -w "%{http_code}" --max-time 110 \
     -X POST "${BASE}/api/cron/tick?max=3&secret=${SECRET}")
