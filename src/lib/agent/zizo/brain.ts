@@ -430,9 +430,8 @@ export async function zizoTick(wsId: string): Promise<{ replies: number; followu
         // شرط الطلب الصريح: بس ليد عنده إشارة طلب حقيقي — ممنوع البث العشوائي
         OR: [
           { intentScore: { gte: 65 } },
-          { intent: { contains: "طلب" } },
-          { intent: { contains: "محتاج" } },
-          { intent: { contains: "عايز" } },
+          // IntentLevel عمود enum في الإنتاج — ممنوع contains؛ نعوض بـ in على أعلى مستويي نية
+          { intent: { in: ["HIGH", "VERY_HIGH"] as never } },
         ],
       },
       orderBy: { score: "desc" },

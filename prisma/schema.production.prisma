@@ -407,6 +407,7 @@ enum JobType {
   AUTOMATION
   REPORT
   CLEANUP
+  FB_COMMENT
   REACTIVATION
   SOURCE_EVALUATION
   GIT_SKILLS_HARVEST
@@ -1460,7 +1461,10 @@ model AgentRun {
   id             String      @id @default(cuid())
   workspaceId    String
   objective      String
-  status         String      @default("RUNNING") // RUNNING | SUCCESS | FAILED
+  status         String      @default("RUNNING") // RUNNING | SUCCESS | FAILED | STOPPED
+  mode           String      @default("SCRIPTED") // SCRIPTED | ENTITY — الكيان المستقل
+  progress       Int         @default(0) // تقدم ذاتي يبلغ عنه الكيان (0-100)
+  strategy       Json?       // ملاحظات الاستراتيجية المتطورة من تأملات الكيان
   plannedQueries Json? // string[]
   platforms      Json? // string[] — المنصات المختارة
   steps          AgentStep[]
