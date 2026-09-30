@@ -2,7 +2,7 @@
 // المصدر الوحيد لعرض القدرات على اللوحة — بدون أي قيم سرية أبدًا
 import { db } from "@/lib/db"
 import { json, jsonError, requireAuth, isResponse, readBody } from "@/lib/api-helpers"
-import { capabilityMatrix, currentRuntimeMode, ensureSessionTables, RUNTIME_MODES_SET } from "@/lib/capabilities"
+import { capabilityMatrix, currentRuntimeMode, ensureSessionTables, setGlobalStop, RUNTIME_MODES_SET } from "@/lib/capabilities"
 
 export async function GET() {
   const auth = await requireAuth()
@@ -38,16 +38,11 @@ export async function POST(req: Request) {
   if (!RUNTIME_MODES_SET.has(mode)) return jsonError(`الوضع غير معروف — المتاح: ${[...RUNTIME_MODES_SET].join("، ")}`)
   try {
     await ensureSessionTables()
-    if (mode === "STOPPED" || mode === "FULL") {
-      // STOPPED = قفل عام صريح؛ FULL = مسح القفل (الحساب التلقائي يتكفل بالباقي)
-      await db.systemState.upsert({
-        where: { key: "runtime.mode" },
-        update: { value: mode },
-        create: { key: "runtime.mode", value: mode },
-      })
+    if (mode === "STOPPED") {
+      await setGlobalStop(true, auth.user.email || auth.user.id)
     } else {
-      // SESSIONLESS / DEGRADED = أوضاع محسوبة تلقائيًا — نمسح أي قفل يدوي
-      await db.systemState.deleteMany({ where: { key: "runtime.mode" } })
+      // FULL/SESSIONLESS/DEGRADED = كلها رجوع للحساب التلقائي + رفع أي قفل إيقاف
+      await setGlobalStop(false, auth.user.email || auth.user.id)
     }
   } catch (err) {
     return jsonError(`تعذر حفظ الوضع: ${err instanceof Error ? err.message.slice(0, 120) : "خطأ"}`, 500)

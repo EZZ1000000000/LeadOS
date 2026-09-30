@@ -323,8 +323,8 @@ export function computeRuntimeMode(
 
 export async function currentRuntimeMode(): Promise<{ mode: RuntimeMode; reason: string }> {
   try {
-    const flag = await db.systemState.findUnique({ where: { key: "runtime.mode" } }).catch(() => null)
-    if (flag?.value === "STOPPED") return { mode: "STOPPED", reason: "مفتاح إيقاف عام مُفعّل من لوحة النظام" }
+    const flag = await db.systemState.findUnique({ where: { id: "singleton" } }).catch(() => null)
+    if (flag?.state === "STOPPED") return { mode: "STOPPED", reason: "مفتاح إيقاف عام مُفعّل" + (flag.stoppedBy ? " (" + flag.stoppedBy + ")" : "") }
     if (process.env.LEADOS_RUNTIME_MODE === "STOPPED") return { mode: "STOPPED", reason: "LEADOS_RUNTIME_MODE=STOPPED" }
   } catch { /* جدول قد لا يكون موجودًا — نكمل عادي */ }
   const states: SessionState[] = []
@@ -338,6 +338,20 @@ export async function currentRuntimeMode(): Promise<{ mode: RuntimeMode; reason:
         ? "كل الجلسات المضافة صالحة والمصادر العامة تعمل"
         : "بعض الجلسات منتهية أو معطوبة — يعمل المتاح ويُسجل الباقي",
   }
+}
+
+/** تغيير مفتاح الإيقاف العام — STOPPED يوقف النبضات، RUNNING يرجع للحساب التلقائي */
+export async function setGlobalStop(stopped: boolean, by: string): Promise<void> {
+  const now = new Date()
+  await db.systemState.upsert({
+    where: { id: "singleton" },
+    update: stopped
+      ? { state: "STOPPED", stoppedAt: now, stoppedBy: by }
+      : { state: "RUNNING", resumedAt: now, resumedBy: by },
+    create: stopped
+      ? { id: "singleton", state: "STOPPED", stoppedAt: now, stoppedBy: by }
+      : { id: "singleton", state: "RUNNING", resumedAt: now, resumedBy: by },
+  })
 }
 
 // ══════════ مصفوفة اللوحة (بدون أي قيم سرية) ══════════

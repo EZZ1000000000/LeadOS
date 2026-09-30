@@ -1360,9 +1360,14 @@ model PlatformAccount {
   @@index([platform, kind])
 }
 
-/// حالة النظام العامة — مفتاح/قيمة (وضع التشغيل، مفتاح الإيقاف العام…)
+/// حالة النظام العامة (مفتاح الإيقاف العام) — صف singleton يتحكم فيه Owner/Admin
 model SystemState {
-  key       String   @id
-  value     String
-  updatedAt DateTime @updatedAt
+  id        String    @id @default("singleton")
+  state     String    // RUNNING | STOPPED
+  reason    String?
+  stoppedAt DateTime?
+  stoppedBy String?
+  resumedAt DateTime?
+  resumedBy String?
+  updatedAt DateTime  @updatedAt
 }
