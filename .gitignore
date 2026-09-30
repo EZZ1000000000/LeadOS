@@ -87,3 +87,4 @@ scripts/zenrows-*.html
 *.pid
 *.bundle
 *.tar.gz
+.env.local
