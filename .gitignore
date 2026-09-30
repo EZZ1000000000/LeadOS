@@ -88,3 +88,6 @@ scripts/zenrows-*.html
 *.bundle
 *.tar.gz
 .env.local
+.vercel-runtime-env
+.vercel
+.env.prod-runtime
