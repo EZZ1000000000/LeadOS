@@ -23,7 +23,7 @@ export const facebookPolicy: PlatformPolicy = {
   "windowMs": 600000,
   "cooldownAfterGenerationMs": 180000,
   "activeHours": {
-    "start": 0,
+    "start": 8,
     "end": 24,
     "tz": "Africa/Cairo"
   },

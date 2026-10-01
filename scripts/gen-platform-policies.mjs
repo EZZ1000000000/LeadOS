@@ -46,7 +46,7 @@ const policies = {
     cooldownAfterGenerationMs: 180000,
     failureBackoffMs: 1200000,
     maxJobsPerGeneration: 8,
-    notes: "فيسبوك: التصفح عبر mbasic للمحتوى العام والمسجَّل؛ أي checkpoint/حظر → BACKOFF فوري بلا إعادة محاولة متلاحقة",
+    notes: "فيسبوك: التصفح عبر mbasic؛ checkpoint/حظر → BACKOFF فوري. قيد حقيقي موثّق: الجلسة المسجّلة ترفض IP مراكز البيانات (تحويل login.php) — المهام الموثقة تتطلب runtime بـIP سكني؛ من IP مركز بيانات يُبلّغ الـruntime NEEDS_SESSION بصدق ويكمل العام",
   },
   // ─── إنستغرام: عامة فقط حاليًا — بروفايلات ومنشورات عامة ───
   INSTAGRAM: {

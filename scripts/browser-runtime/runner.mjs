@@ -62,9 +62,13 @@ class ActionWindow {
   }
 }
 
-/** كشف جدار تسجيل الدخول — وجوده = الجلسة انتهت (لا تجاوز أبدًا §34) */
+/** كشف جدار تسجيل الدخول — متعدد اللغات (المنصة تخدم صفحة الدخول بلغة الـIP) + فحص رابط التحويل (لا تجاوز أبدًا §34) */
 function looksLoggedOut(text) {
-  return /تسجيل الدخول|log in to (facebook|continue)|login_form|checkpoint|please log in|sign in to continue/i.test((text || "").slice(0, 4000))
+  return /تسجيل الدخول|log in to (facebook|continue)|login_form|checkpoint|please log in|sign in to continue|登入|登录|登錄|Войти|Zaloguj|Connexion|Iniciar sesión|Accedi|Anmelden|로그イン/i.test((text || "").slice(0, 5000))
+}
+/** تحويل صريح لصفحة الدخول — أقوى إشارة انتهاء جلسة */
+function isLoginRedirect(finalUrl) {
+  return /\/login\.php|\/accounts\/login|login\/?next=|\/login\?/i.test(finalUrl || "")
 }
 
 /** استخراج منشورات من صفحة جروب (mbasic/ويب) — قارئ عام محايد بدون أي تجاوز */
@@ -157,7 +161,7 @@ async function main() {
       await window.before(browserId, "فحص صحة الجلسة الدوري")
       const res = await page.goto(home, { waitUntil: "domcontentloaded", timeout: 45_000 })
       const text = await page.content()
-      if (res && res.status() < 400 && !looksLoggedOut(text)) {
+      if (isLoginRedirect(page.url()) || looksLoggedOut(text)) {
         sessionHealth = "HEALTHY"
         log(`💚 فحص الجلسة: HEALTHY (${platform})`)
       } else {
@@ -195,6 +199,14 @@ async function main() {
         if (!url) throw new Error("لا url للجروب")
         const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 })
         await sleep(1200 + Math.floor(Math.random() * 2000)) // §10: pacing بشري داخل الحدود
+        if (isLoginRedirect(page.url())) {
+          sessionHealth = "EXPIRED"
+          if (needsSession) {
+            await api("task", { browserId, jobId: job.id, ok: false, note: "NEEDS_SESSION — تحويل صريح لصفحة الدخول", data: { status: "NEEDS_SESSION", sessionHealth } })
+            log(`🛑 #${i + 1} تحويل لصفحة الدخول → NEEDS_SESSION (لا تجاوز §34)`)
+            continue
+          }
+        }
         const html = await page.content()
         if (looksLoggedOut(html)) {
           sessionHealth = "EXPIRED"
@@ -223,8 +235,9 @@ async function main() {
         if (!url) throw new Error("لا url")
         const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 })
         await sleep(800 + Math.floor(Math.random() * 1200))
-        const html = await page.content()
-        if (looksLoggedOut(html)) {
+        if (isLoginRedirect(page.url())) {
+          ok = false; note = "NEEDS_SESSION — تحويل صريح لصفحة الدخول"
+        } else if (looksLoggedOut(await page.content())) {
           ok = false; note = "NEEDS_SESSION — صفحة خلف جدار دخول (Jina قد يقرأها كعامة لاحقًا)"
         } else {
           const text = await page.evaluate(() => (document.body?.innerText || "").slice(0, 20_000))

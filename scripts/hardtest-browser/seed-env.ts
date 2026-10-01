@@ -22,7 +22,7 @@ async function main() {
   }
   const src = await db.source.findFirst({ where: { workspaceId: ws.id } })
   if (!src) {
-    await db.source.create({ data: { workspaceId: ws.id, name: "Browser Runtime Test", type: "WEB", status: "ACTIVE" } })
+    await db.source.create({ data: { workspaceId: ws.id, name: "Browser Runtime Test", type: "OTHER" as never, status: "ACTIVE" } })
   }
   console.log("SEEDED:", { workspace: ws.id, admin: admin.email })
   process.exit(0)

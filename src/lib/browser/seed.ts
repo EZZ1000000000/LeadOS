@@ -3,10 +3,17 @@
 // الحماية من انفجار الطابور: دفعة واحدة في الطيران لكل منصة (§19) + سقف جوبات من السياسة.
 import { db } from "@/lib/db"
 import { policyFor, allPolicies } from "./policy"
+import { loadSessionState, sessionUsable } from "./session-store"
 
 const SCAN_COOLDOWN_MS = 15 * 60 * 1000 // نفس cooldown المسح الحالي — لا مسح مزدوج
 
 export interface SeedResult { seeded: number; perPlatform: Record<string, number>; notes: string[] }
+
+/** جلسة المنصة صالحة لمهامها الموثقة؟ — جلسة منتهية = لا بذر جوبات تتطلبها (منع دورة فشل بلا معنى) */
+async function browserSessionUsable(workspaceId: string, platform: string): Promise<boolean> {
+  const s = await loadSessionState(workspaceId, platform)
+  return sessionUsable(s.status)
+}
 
 /** هل للمنصة جوبة حية بالفعل في الطابور؟ — دفعة واحدة في الطيران لكل منصة (تصفية JS متوافقة) */
 async function hasLiveJob(workspaceId: string, platform: string): Promise<boolean> {
@@ -43,6 +50,12 @@ export async function seedBrowserScanJobs(): Promise<SeedResult> {
       take: Math.min(policy.maxJobsPerGeneration, 6),
     })
     if (!due.length) continue
+
+    // حرس الجلسة: لو كل المهام المطلوبة (GROUPS_SCAN/RADAR_SCAN) تتطلب جلسة والجلسة غير صالحة
+    // → لا بذر (يمنع دورة seed→NEEDS_SESSION→FAILED بلا فائدة — §19 نظافة الطابور)
+    if (scanJobs.length > 0 && scanJobs.every((t) => policy.sessionRequiredJobs.includes(t as never)) && !(await browserSessionUsable(ws.id, policy.platform))) {
+      continue
+    }
 
     const perBatch = Math.min(due.length, policy.maxJobsPerGeneration)
     const halfRadar = scanJobs.includes("RADAR_SCAN") ? Math.max(1, Math.floor(perBatch / 3)) : 0
