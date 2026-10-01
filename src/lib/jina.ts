@@ -1,7 +1,8 @@
-// LeadOS — Jina Reader كطبقة fallback للقراءة العامة (طلب §15)
-// التدفق: Direct fetch → فشل/محتوى ناقص → Jina Reader → نص نظيف → التصنيف/البحث
+// LeadOS — Jina Reader كطبقة fallback للقراءة العامة (طلب §15) + مراقبة كاملة (طلب §29)
+// التدفق: Browser/public fetch → محتوى غير كافٍ → Jina Reader → نص نظيف → التصنيف/البحث
 // حدود آمنة: لا تسجيل دخول عبر Jina، لا تجاوز CAPTCHA/MFA/access controls —
 // لو الصفحة محمية → NEEDS_SESSION وكمّل. Jina مجرد قارئ عام للمحتوى المتاح للعامة.
+import { recordJinaMetric } from "@/lib/browser/jina-metrics"
 export interface ReadResult {
   ok: boolean
   status: "OK" | "NEEDS_SESSION" | "BLOCKED" | "ERROR"
@@ -35,20 +36,32 @@ async function directFetch(url: string, timeoutMs = 12000): Promise<{ status: nu
   return { status: res.status, html }
 }
 
-/** Jina Reader — قارئ عام مجاني (r.jina.ai) — يدعم مفتاح اختياري لرفع الكوتة */
+/** Jina Reader — قارئ عام مجاني (r.jina.ai) — يدعم مفتاح اختياري لرفع الكوتة — مع قياس كامل (§29) */
 async function jinaFetch(url: string, timeoutMs = 20000): Promise<string> {
+  const started = Date.now()
   const key = process.env.JINA_API_KEY
-  const res = await fetch(`https://r.jina.ai/${url}`, {
-    headers: {
-      // r.jina.ai يرجع Markdown نظيف — مفتاح اختياري فقط، غيابه لا يفشل النظام
-      ...(key ? { Authorization: `Bearer ${key}` } : {}),
-      "User-Agent": UA,
-      Accept: "text/plain",
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-  })
-  if (!res.ok) throw new Error(`jina HTTP ${res.status}`)
-  return (await res.text()).slice(0, 300_000)
+  try {
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      headers: {
+        // r.jina.ai يرجع Markdown نظيف — مفتاح اختياري فقط، غيابه لا يفشل النظام
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        "User-Agent": UA,
+        Accept: "text/plain",
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) {
+      void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, error: `jina HTTP ${res.status}` })
+      throw new Error(`jina HTTP ${res.status}`)
+    }
+    const text = (await res.text()).slice(0, 300_000)
+    void recordJinaMetric({ ok: true, latencyMs: Date.now() - started })
+    return text
+  } catch (err) {
+    const isTimeout = err instanceof Error && /timeout|abort/i.test(err.name + err.message)
+    void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, timeout: isTimeout, error: err instanceof Error ? err.message.slice(0, 200) : "فشل" })
+    throw err
+  }
 }
 
 /**

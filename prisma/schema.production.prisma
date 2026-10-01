@@ -527,6 +527,11 @@ model Workspace {
   tacticStats        TacticStat[]
   skillStats         SkillStat[]
   skillLessons       SkillLesson[]
+  browserRuntimes    BrowserRuntime[]
+  browserSessionStates BrowserSessionState[]
+  browserCheckpoints BrowserCheckpoint[]
+  browserEvents      BrowserEvent[]
+  jinaMetrics        JinaMetric[]
 }
 
 // ═══ عقل المهارات — الإحصاء والتعلم (doc §3) ═══
@@ -1658,4 +1663,116 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, sentAt])
+}
+// ═══════════ Browser Runtime — منصة واحدة = متصفح مخصص طوال عمر الـJob ═══════════
+
+/// متصفح حي داخل GitHub Actions Job — يعيش طول الـJob ومهامه كثيرة عليه، يُغلق مرة واحدة عند النهاية
+model BrowserRuntime {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  platform       String    // FACEBOOK | INSTAGRAM | ... — لا يلمس إلا جوبات منصته
+  browserId      String    @unique
+  profileId      String    // bpf-<platform>-01 — affinity ثابت للمنصة
+  generation     Int       @default(0)
+  runnerId       String?   // معرف الـrunner (GitHub runner / محلي)
+  ghRunId        String?   // معرف تشغيل GitHub Actions
+  status         String    @default("STARTING") // STARTING | READY | BUSY | IDLE | FAILED | RECOVERING | LOST | CLOSED
+  currentTask    String?
+  tasksCompleted Int       @default(0)
+  startedAt      DateTime  @default(now())
+  lastHeartbeat  DateTime  @default(now())
+  checkpointAt   DateTime?
+  closedAt       DateTime?
+  closeReason    String?   // JOB_END | CRASH | SESSION_CORRUPTION | FATAL_ERROR | PLATFORM_RESET
+  lastError      String?
+  meta           Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([platform, status])
+  @@index([workspaceId, platform, status])
+  @@index([status, lastHeartbeat])
+}
+
+/// حالة جلسة المتصفح لكل منصة — الاستمرارية بين generations مبنية عليها، لا على process قديمة
+model BrowserSessionState {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  platform            String
+  browserProfileId    String    // bpf-<platform>-01 — affinity: بروفايل المنصة لا يُستخدم لمنصة أخرى
+  sessionStateVersion Int       @default(0) // يزيد مع كل حفظ ناجح — لا جلسة جديدة بلا سبب
+  status              String    @default("NEEDS_SESSION") // READY | HEALTHY | DEGRADED | EXPIRED | NEEDS_SESSION | FAILED | RECOVERING
+  storageCipher       String?   // storage_state (كوكيز + تخزين) مشفّر AES-256-GCM — لا يُعرض أبدًا
+  storageMeta         Json?     // وصف فقط: عدد الكوكيز/الحجم/المصدر — بدون قيم
+  lastValidatedAt     DateTime?
+  lastSuccessfulUse   DateTime?
+  generation          Int       @default(0)
+  lastError           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform, browserProfileId])
+  @@index([platform, status])
+}
+
+/// checkpoint قبل أي عملية طويلة — فقدان المتصفح لا يعيد كل المهمة من الصفر
+model BrowserCheckpoint {
+  id          String    @id @default(cuid())
+  workspaceId String
+  browserId   String
+  platform    String
+  jobId       String?
+  ghRunId     String?
+  generation  Int       @default(0)
+  step        String
+  cursor      Json?
+  status      String    @default("ACTIVE") // ACTIVE | RESTORED | SUPERSEDED
+  createdAt   DateTime  @default(now())
+  restoredAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([browserId, status])
+  @@index([platform, generation])
+}
+
+/// سجل أحداث المتصفحات — بداية/إغلاق/فقدان heartbeat/استعادة/حفظ جلسة/dispatch
+model BrowserEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  browserId   String?
+  platform    String
+  generation  Int      @default(0)
+  ghRunId     String?
+  type        String   // BROWSER_START | BROWSER_CLOSE | HEARTBEAT_LOST | RECOVER | SESSION_RESTORE | SESSION_SAVE | CHECKPOINT | RATE_WAIT | POLICY_BLOCK | TASK_DONE | TASK_FAILED | DISPATCH | PLATFORM_PAUSED
+  detail      Json?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([platform, createdAt])
+  @@index([type, createdAt])
+}
+
+/// مراقبة Jina Reader — عدّاد يومي (requestCount/success/failure/latency/timeout)
+model JinaMetric {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  day            String    // YYYY-MM-DD
+  requestCount   Int       @default(0)
+  successCount   Int       @default(0)
+  failureCount   Int       @default(0)
+  timeoutCount   Int       @default(0)
+  totalLatencyMs Int       @default(0)
+  lastSuccessAt  DateTime?
+  lastError      String?
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
 }

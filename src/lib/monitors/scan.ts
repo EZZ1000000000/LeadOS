@@ -134,6 +134,37 @@ export async function scanGroup(group: {
   }
 }
 
+/** إدخال منشورات جاية من Browser Runtime (GitHub Actions) — نفس مسار ingestRawPosts الحقيقي:
+ *  تصنيف → تقييم → إزالة تكرار → تحديث مؤشرات الجروب. النتائج تُخزن كما هي من أي متصفح. */
+export async function ingestBrowserRawPosts(
+  group: { id: string; workspaceId: string; platform: string; name: string; externalId: string; url: string },
+  rawPosts: Array<{ externalId?: string; url?: string; author?: string; content: string; postedAt?: string | Date | null }>,
+  status: "OK" | "NEEDS_SESSION" | "BLOCKED" | "ERROR" = "OK",
+  note?: string,
+  membersText?: string,
+): Promise<number> {
+  if (status === "NEEDS_SESSION" || status === "BLOCKED") {
+    await db.monitoredGroup.update({
+      where: { id: group.id },
+      data: { status, statusNote: (note ?? "").slice(0, 300) || null, lastScannedAt: new Date() },
+    }).catch(() => {})
+    return 0
+  }
+  const posts: RawPost[] = (rawPosts ?? [])
+    .filter((p) => p && typeof p.content === "string" && p.content.trim().length >= 10)
+    .map((p) => ({
+      ...p,
+      postedAt: p.postedAt ? new Date(p.postedAt) : undefined,
+    }))
+  let newPosts = 0
+  if (posts.length) newPosts = await ingestRawPosts(group as never, posts)
+  let lastPostAt: Date | undefined
+  const dates = posts.map((p) => p.postedAt).filter((d): d is Date => d instanceof Date && !Number.isNaN(d.getTime()))
+  if (dates.length) lastPostAt = new Date(Math.max(...dates.map((d) => d.getTime())))
+  await updateGroupAfterScan(group.id, { lastPostAt, membersText }, newPosts)
+  return newPosts
+}
+
 /** مسح كل الجروبات المستحقة (cooldown 15 دقيقة) — للـcron والزر اليدوي */
 export async function scanDueGroups(workspaceId: string, limit = 3): Promise<ScanOutcome[]> {
   // SESSIONLESS: لو مفيش جلسة فيسبوك (DB/env) ولا Apify — استبعد جروبات فيسبوك عشان متزنقش الطابور،

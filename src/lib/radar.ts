@@ -198,6 +198,46 @@ export async function radarScanGroup(group: { id: string; name: string; url: str
 
 // ══════════ الحفظ والتجنيد ══════════
 
+/** مسار الرادار لمنشورات خام جاية من Browser Runtime — نفس فلاتر radarScanGroup بالظبط:
+ *  طزاجة (freshMinutes) + سقف تعليقات + نية خدمة + إزالة تكرار → ثم ingestInstantPosts.
+ *  الفلترة على جانب التحكم عشان منطق الرادار يبقى في مكان واحد. */
+export async function ingestRadarRawPosts(
+  wsId: string,
+  group: { id: string; name: string; url: string },
+  rawPosts: Array<{ externalId?: string; url?: string; author?: string; content: string }>,
+): Promise<{ created: number; leads: number; commentsScheduled: number; considered: number; qualified: number }> {
+  const posts: InstantPost[] = []
+  const seen = new Set<string>()
+  const nowTs = Date.now()
+  for (const rp of rawPosts ?? []) {
+    const body = cleanArticleText(rp.content ?? "")
+    if (body.length < 40) continue
+    const ageMin = parseAgeMinutes(rp.content) ?? 9999
+    if (ageMin > RADAR_CONFIG.freshMinutes) continue
+    const comments = parseCommentCount(rp.content)
+    if (comments > RADAR_CONFIG.maxComments) continue
+    const intent = matchInstantIntent(body)
+    if (!intent) continue
+    const key = rp.url || body.slice(0, 120)
+    if (seen.has(key)) continue
+    seen.add(key)
+    posts.push({
+      externalId: rp.externalId || `frt:${body.slice(0, 80)}`,
+      url: rp.url || group.url,
+      author: rp.author,
+      content: body.slice(0, 600),
+      postedAt: new Date(nowTs - ageMin * 60_000),
+      ageMinutes: ageMin,
+      comments,
+      matched: intent.matched,
+      intentScore: intent.score,
+    })
+    if (posts.length >= 5) break
+  }
+  const r = await ingestInstantPosts(wsId, group, posts)
+  return { ...r, considered: (rawPosts ?? []).length, qualified: posts.length }
+}
+
 /** يكتب المنشورات اللحظية: GroupPost + ليد فوري + مهمة/تعليق مجدول. يرجع ملخص */
 export async function ingestInstantPosts(
   wsId: string,

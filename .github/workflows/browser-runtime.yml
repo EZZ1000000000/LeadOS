@@ -1,0 +1,58 @@
+# LeadOS Browser Runtime — ONE PLATFORM → ONE DEDICATED BROWSER → LONG-LIVED SESSION → CONTINUOUS WORK
+# المتصفح يعيش طول الـJob بالكامل (مهام كثيرة بلا إغلاق بينها)، الجلسة تُحفظ في النهاية
+# ويستعيدها الجيل القادم على runner جديد (Persistent Session State — لا اعتماد على process قديمة).
+# إزالة: لا Modal — GitHub Actions فقط.
+name: LeadOS Browser Runtime
+
+on:
+  repository_dispatch:
+    types: [browser-generation]   # self-dispatch: Generation N → N+1
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "منصة محددة (فاضي = اختيار آلي حسب الطابور والسياسات)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "*/10 * * * *"        # نبضة دورية — لو مفيش dispatch: تلتقط الشغل المستحق
+
+concurrency:
+  group: leados-browser-runtime
+  cancel-in-progress: false       # لا dispatch storm — جيل واحد في الطيران
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LEADOS_BASE_URL: ${{ secrets.LEADOS_BASE_URL }}
+      LEADOS_RUNNER_SECRET: ${{ secrets.CRON_SECRET }}
+      LEADOS_PLATFORM: ${{ github.event.client_payload.platform || github.event.inputs.platform || '' }}
+      LEADOS_RUNNER_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+      GH_RUN_ID: ${{ github.run_id }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      TZ: Africa/Cairo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: تثبيت Playwright + Chromium (متصفح حقيقي داخل الـJob)
+        run: |
+          npm install playwright@1.63.0 --no-save
+          npx playwright install chromium --with-deps
+
+      - name: تشغيل الجيل — متصفح واحد طويل الحياة لمهمّات منصة واحدة
+        run: node scripts/browser-runtime/runner.mjs 2>&1 | tee runner-output.txt
+
+      - name: حفظ تشخيص عند الفشل (بدون أي جلسات/كوكيز)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-runtime-debug-${{ github.run_id }}
+          path: |
+            runner-output.txt
+          retention-days: 3

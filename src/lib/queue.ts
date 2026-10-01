@@ -16,6 +16,7 @@ import { SKILL_BY_PLATFORM } from "@/lib/skills/registry"
 import { queriesForPlatform, freshAiQueries, aiSelectPlatforms } from "@/lib/skills/selector"
 import { graphPlatformPriorities } from "@/lib/skills/graph"
 import { harvestGitSkills } from "@/lib/skills/gitskills"
+import { seedBrowserScanJobs } from "@/lib/browser/seed"
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`
 /** ميزانية وقت الجوبة الواحدة — لازم تخلص قبل maxDuration=120 بتاع الـtick */
 // (كانت 110ث — الجوبة الواحدة بتاكل العنب والجوبة التانية كانت بيموت نصها في الـtimeout)
@@ -39,6 +40,8 @@ async function claimJobs(limit: number) {
     where: {
       status: { in: ["QUEUED", "RETRYING"] },
       scheduledAt: { lte: new Date() },
+      // BROWSER_SCAN ملك المتصفحات الحية (GitHub Actions runtime) — النبضة لا تلمسها
+      type: { not: "BROWSER_SCAN" },
     },
     orderBy: [{ priority: "desc" }, { scheduledAt: "asc" }],
     take: limit,
@@ -720,8 +723,9 @@ export async function processTick(
 ): Promise<{ processed: number; details: string[]; scheduledRules: number }> {
   const details: string[] = []
   // 0) Recover stale RUNNING jobs (worker crashed mid-job)
+  // (BROWSER_SCAN مستثناة — متصفحاتها تُدار عبر heartbeat في reapLostBrowsers)
   await db.job.updateMany({
-    where: { status: "RUNNING", lockedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } },
+    where: { status: "RUNNING", type: { not: "BROWSER_SCAN" }, lockedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } },
     data: { status: "QUEUED", lockedAt: null, workerId: null },
   })
 
@@ -737,9 +741,10 @@ export async function processTick(
 
   // 0.6) إحياء الجوبات العالقة: instance اتقتل وقت النشر/التجميد (serverless)
   // → RUNNING أقدم من 20 دقيقة من غير اكتمال يرجع QUEUED ويتعالج تاني
+  // (BROWSER_SCAN مستثناة — نفتها يكتشفها reapLostBrowsers عبر heartbeat وإلا تتقفل مرتين)
   try {
     const revived = await db.job.updateMany({
-      where: { status: "RUNNING", startedAt: { lt: new Date(Date.now() - 20 * 60_000) } },
+      where: { status: "RUNNING", type: { not: "BROWSER_SCAN" }, startedAt: { lt: new Date(Date.now() - 20 * 60_000) } },
       data: { status: "QUEUED", startedAt: null, lockedAt: null, workerId: null },
     })
     if (revived.count) console.log(`[tick] revived ${revived.count} stale RUNNING job(s)`)
@@ -777,7 +782,7 @@ export async function processTick(
           workspaceId: rule.workspaceId,
           type: "DISCOVERY",
           status: { in: ["QUEUED", "RETRYING", "RUNNING"] },
-          payload: { path: ["ruleId"], equals: rule.id },
+          payload: { path: "ruleId", equals: rule.id },
         },
         select: { id: true },
       })
@@ -803,6 +808,13 @@ export async function processTick(
     scheduledRules++
     if (scheduledRules >= 3) break
   }
+
+  // 1.5) وقود المتصفحات: بذر جوبات BROWSER_SCAN للمنصات المستحقة (دفعات واحد لكل منصة — §19)
+  // فشل البذر لا يكسر النبضة أبدًا — best-effort
+  try {
+    const seeded = await seedBrowserScanJobs()
+    if (seeded.seeded) details.push(`BROWSER_SEED: ${seeded.seeded} جوبة (${Object.entries(seeded.perPlatform).map(([p, n]) => `${p}=${n}`).join(" ")})`)
+  } catch { /* بذر المتصفحات best-effort */ }
 
   // 2) Process queued jobs — واحد واحد مع ميزانية وقت إجمالية:
   // الـtick ليه maxDuration=120s — الجوبة الواحدة ممكن تاكل 75ث؛ الجوبة التانية متبدأش إلا لو لسه بدري جدًا
@@ -902,15 +914,5 @@ export async function processTick(
     }
   } catch { /* آمن — لا يوقف النبضة */ }
 
-  return { processed: jobs.length, details, scheduledRules }
-
-  // 6-ب) SESSIONLESS: إحياء المهام المنتظرة لو الجلسة وصلت (رخيص: استعلام واحد بس لو في منتظرين)
-  try {
-    const waiting = await db.job.count({ where: { status: "WAITING_FOR_CAPABILITY" } })
-    if (waiting > 0) {
-      const { requeueWaitingJobs } = await import("@/lib/capabilities")
-      const requeued = await requeueWaitingJobs()
-      if (requeued) details.push(`CAPABILITY_RESUME: ${requeued} مهام رجعت للطابور بعد وصول الجلسة`)
-    }
-  } catch { /* آمن — لا يوقف النبضة */ }
+  return { processed, details, scheduledRules }
 }
