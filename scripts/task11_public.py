@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path("/home/z/my-project")
-GH_REPO = "EZZ1000000000/LeadOS"
+GH_REPO = "rfha82740-ship-it/LeadOS"
 GH_API = "https://api.github.com"
 
 

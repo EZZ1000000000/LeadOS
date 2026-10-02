@@ -3,7 +3,7 @@
 import subprocess, json, urllib.request, urllib.error, sys, re, math
 from datetime import datetime, timezone, timedelta
 
-REPO = "EZZ1000000000/LeadOS"
+REPO = "rfha82740-ship-it/LeadOS"
 
 def gh(path, token, method="GET"):
     req = urllib.request.Request("https://api.github.com" + path, headers={

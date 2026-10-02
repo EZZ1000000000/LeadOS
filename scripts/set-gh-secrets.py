@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from nacl import encoding, public
 
-REPO = "EZZ1000000000/LeadOS"
+REPO = "rfha82740-ship-it/LeadOS"
 TOKEN = Path("/tmp/gh_token").read_text().strip()
 
 

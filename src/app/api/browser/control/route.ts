@@ -19,8 +19,8 @@ async function githubRuntimeStatus(): Promise<{
   message?: string
 }> {
   try {
-    const repo = process.env.GH_ACTIONS_REPO || "EZZ1000000000/LeadOS"
-    const workflow = process.env.GH_ACTIONS_WORKFLOW || "browser-runtime.yml"
+    const repo = process.env.GH_ACTIONS_REPO || "rfha82740-ship-it/LeadOS"
+    const workflow = process.env.GH_ACTIONS_WORKFLOW || "browser-farm.yml"
     const headers: Record<string, string> = { Accept: "application/vnd.github+json", "User-Agent": "leados-control" }
     if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
     const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/runs?per_page=1`, {

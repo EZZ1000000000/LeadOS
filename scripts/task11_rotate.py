@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path("/home/z/my-project")
-GH_REPO = "EZZ1000000000/LeadOS"
+GH_REPO = "rfha82740-ship-it/LeadOS"
 PROJECT_ID = "prj_t6eWDN0XUg5RyLJLFCXpHRmjwpbC"
 
 VERCEL_API = "https://api.vercel.com"
