@@ -23,6 +23,7 @@ interface PlatformRow {
 
 interface ControlData {
   platforms: PlatformRow[]
+  github?: { state: "OPERATIONAL" | "FAILING" | "BLOCKED_EXTERNAL" | "UNKNOWN"; lastRunAt: string | null; conclusion: string | null; url: string | null; message?: string }
   health: {
     activeBrowsers: number; globalActive: number; globalBrowserLimit: number; globalJobLimit: number
     totalUptimeMinutes: number; browserStarts24h: number; unexpectedRestarts24h: number
@@ -95,6 +96,17 @@ export function BrowserControlView() {
   return (
     <div className="space-y-4" dir="rtl">
       {/* ─── GLOBAL (§40) ─── */}
+      {/* حالة GitHub Actions runner (§14) — حقيقية فقط: OPERATIONAL/FAILING/BLOCKED_EXTERNAL/UNKNOWN */}
+      {data.github && (
+        <div className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-xs ${data.github.state === "OPERATIONAL" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-300" : data.github.state === "UNKNOWN" ? "border-border text-muted-foreground" : "border-rose-500/30 bg-rose-500/5 text-rose-300"}`}>
+          <span className="font-bold">⚙️ GitHub Actions Runtime:</span>
+          <span>{data.github.state === "OPERATIONAL" ? "يعمل" : data.github.state === "FAILING" ? "فاشل (تشغيل فعلي فشل)" : data.github.state === "BLOCKED_EXTERNAL" ? "محجوب خارجيًا (startup_failure — قيد حساب)" : "غير معروف"}</span>
+          {data.github.lastRunAt && <span className="text-muted-foreground">آخر تشغيل: {timeAgo(data.github.lastRunAt)} ({data.github.conclusion})</span>}
+          {data.github.message && <span className="text-muted-foreground">{data.github.message}</span>}
+          {data.github.state === "BLOCKED_EXTERNAL" && <span className="text-amber-300">— سبب خارجي لا يُصلح بالكود: يلزم حل قيد الحساب أو runner ذاتي الاستضافة (docs/DEPLOY-vps.md)</span>}
+          {data.github.url && <a href={data.github.url} target="_blank" rel="noreferrer" className="underline">لوج التشغيل</a>}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
         <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">متصفحات نشطة</div><div className="text-2xl font-bold">{h.activeBrowsers}</div><div className="text-[11px] text-muted-foreground">الحد العام: {h.globalBrowserLimit}</div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">مهام مكتملة 24س</div><div className="text-2xl font-bold">{fmtNum(h.tasksDone24h)}</div><div className="text-[11px] text-muted-foreground">نسبة مهمة/متصفح: {h.jobsPerBrowserRatio}</div></CardContent></Card>

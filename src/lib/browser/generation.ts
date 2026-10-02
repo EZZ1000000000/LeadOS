@@ -369,10 +369,10 @@ export async function finishGeneration(browserId: string, opts: {
     data: { status: "QUEUED", lockedAt: null, workerId: null, scheduledAt: new Date() },
   })
 
-  // 2) إغلاق المتصفح مرة واحدة في نهاية الـJob
+  // 2) إغلاق المتصفح مرة واحدة في نهاية الـJob — الإغلاقات القاتلة (crash/fatal/فساد جلسة) تُعلَّم FAILED
   await db.browserRuntime.update({
     where: { id: rt.id },
-    data: { status: closeReason === "CRASH" ? "FAILED" : "CLOSED", closedAt: new Date(), closeReason, lastError: opts.note?.slice(0, 300) ?? null, currentTask: null },
+    data: { status: ["CRASH", "FATAL_ERROR", "SESSION_CORRUPTION"].includes(closeReason) ? "FAILED" : "CLOSED", closedAt: new Date(), closeReason, lastError: opts.note?.slice(0, 300) ?? null, currentTask: null },
   })
   await recordEvent(rt.workspaceId, "BROWSER_CLOSE", {
     platform: rt.platform, browserId, generation: rt.generation,

@@ -107,6 +107,7 @@ async function main() {
   // ═══ 2) START BROWSER (مرة واحدة) + LOAD SESSION ═══
   const browser = await chromium.launch({ headless: true })
   let context
+  let sessionCorrupted = false // الجلسة المحفوظة تالفة → نكمل عامًا (لا حلقة فشل لا نهائية عبر الجيلات)
   try {
     if (session.storage) {
       const st = JSON.parse(session.storage)
@@ -133,14 +134,31 @@ async function main() {
       log("   ⚠️ لا جلسة محفوظة — متصفح عام (المهام العامة فقط)")
     }
   } catch (err) {
-    log(`💥 فشل بناء السياق: ${err.message} → finish SESSION_CORRUPTION`)
-    await api("finish", { browserId, closeReason: "SESSION_CORRUPTION", note: `فشل استعادة الجلسة: ${String(err.message).slice(0, 150)}` })
-    process.exit(1)
+    // حماية من حلقة الفشل: حالة تالفة لا تموت الجيلات القادمة — تنظيف كوكيز ثم محاولة ثانية ثم متصفح عام
+    log(`⚠️ حالة الجلسة المحفوظة فشلت في الاستعادة (${String(err.message).slice(0, 120)}) — محاولة تنظيف ذاتي`)
+    try {
+      const st = JSON.parse(session.storage || "{}")
+      if (Array.isArray(st.cookies) && st.cookies.length) {
+        st.cookies = st.cookies.map((c) => ({ ...c, path: c.path || "/", sameSite: c.sameSite && ["Strict", "Lax", "None"].includes(c.sameSite) ? c.sameSite : "Lax" }))
+        const dir = mkdtempSync(join(tmpdir(), "leados-rt-"))
+        const f = join(dir, "storage-state.json")
+        writeFileSync(f, JSON.stringify(st))
+        context = await browser.newContext({ storageState: f })
+        sessionCorrupted = true
+        log(`   📥 استُعيدت بعد تنظيف الكوكيز (${st.cookies.length} كوكي) — ستُستبدل بحفظ سليم في نهاية الجيل`)
+      } else {
+        throw new Error("لا كوكيز قابلة للتنظيف")
+      }
+    } catch (err2) {
+      context = await browser.newContext()
+      sessionCorrupted = true
+      log(`   🌐 متصفح عام (${String(err2.message).slice(0, 80)}) — المهام العامة تعمل، الموثقة NEEDS_SESSION — حفظ الجيل هذا يستبدل الحالة التالفة (لا حلقة §11)`)
+    }
   }
 
   const page = await context.newPage()
   const window = new ActionWindow(policy.maxActionsPerWindow, policy.windowMs)
-  let sessionHealth = session.status === "NEEDS_SESSION" ? "NEEDS_SESSION" : "HEALTHY"
+  let sessionHealth = sessionCorrupted ? "EXPIRED" : session.status === "NEEDS_SESSION" ? "NEEDS_SESSION" : "HEALTHY"
   let lastHealthCheck = Date.now()
   let rateWaitReport = null
 
@@ -162,11 +180,11 @@ async function main() {
       const res = await page.goto(home, { waitUntil: "domcontentloaded", timeout: 45_000 })
       const text = await page.content()
       if (isLoginRedirect(page.url()) || looksLoggedOut(text)) {
-        sessionHealth = "HEALTHY"
-        log(`💚 فحص الجلسة: HEALTHY (${platform})`)
-      } else {
         sessionHealth = "EXPIRED"
-        log(`🛑 فحص الجلسة: EXPIRED — إيقاف المهام الموثقة، استمرار العامة (§11)`)
+        log(`🛑 فحص الجلسة: EXPIRED (${platform}) — إيقاف المهام الموثقة، استمرار العامة (§11)`)
+      } else {
+        sessionHealth = "HEALTHY"
+        log(`💚 فحص الجلسة: HEALTHY — الجلسة صالحة`)
       }
     } catch { /* شبكة — لا نقلّع الجلسة على عتاب شبكة */ }
   }

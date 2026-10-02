@@ -9,6 +9,8 @@ export interface ReadResult {
   text: string
   via: "direct" | "jina" | null
   note?: string
+  /** تصنيف مصدر القراءة الصريح — مباشر ناجح / Jina ناجح / فشل Jina مفصّل (طلب §6) */
+  sourceStatus?: "DIRECT_SUCCESS" | "JINA_SUCCESS" | "JINA_403" | "JINA_TIMEOUT" | "JINA_ERROR" | "NEEDS_SESSION"
 }
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
@@ -51,15 +53,19 @@ async function jinaFetch(url: string, timeoutMs = 20000): Promise<string> {
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) {
-      void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, error: `jina HTTP ${res.status}` })
-      throw new Error(`jina HTTP ${res.status}`)
+      void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, error: `JINA_${res.status === 403 ? "403" : "ERROR"} HTTP ${res.status}` })
+      const err = new Error(`JINA_${res.status === 403 ? "403" : "ERROR"} HTTP ${res.status}`)
+      ;(err as Error & { jinaStatus?: number }).jinaStatus = res.status
+      throw err
     }
     const text = (await res.text()).slice(0, 300_000)
     void recordJinaMetric({ ok: true, latencyMs: Date.now() - started })
     return text
   } catch (err) {
     const isTimeout = err instanceof Error && /timeout|abort/i.test(err.name + err.message)
-    void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, timeout: isTimeout, error: err instanceof Error ? err.message.slice(0, 200) : "فشل" })
+    if (!(err instanceof Error && /JINA_(403|ERROR)/.test(err.message))) {
+      void recordJinaMetric({ ok: false, latencyMs: Date.now() - started, timeout: isTimeout, error: err instanceof Error ? `JINA_${isTimeout ? "TIMEOUT" : "ERROR"} ${err.message.slice(0, 180)}` : "JINA_ERROR فشل" })
+    }
     throw err
   }
 }
@@ -74,15 +80,15 @@ export async function fetchReadable(url: string, opts?: { minChars?: number; dir
   try {
     const { status, html } = await directFetch(url, opts?.directTimeoutMs)
     if (status === 200 && html.trim().length >= minChars && !looksLikeLoginWall(html)) {
-      return { ok: true, status: "OK", text: html, via: "direct" }
+      return { ok: true, status: "OK", text: html, via: "direct", sourceStatus: "DIRECT_SUCCESS" }
     }
     if (looksLikeLoginWall(html)) {
       // الصفحة عامة الشكل لكن محتواها خلف جدار — جرّب Jina كقارئ عام قبل الاستسلام
       try {
         const md = await jinaFetch(url)
-        if (md.trim().length >= minChars && !looksLikeLoginWall(md)) return { ok: true, status: "OK", text: md, via: "jina" }
+        if (md.trim().length >= minChars && !looksLikeLoginWall(md)) return { ok: true, status: "OK", text: md, via: "jina", sourceStatus: "JINA_SUCCESS" }
       } catch { /* Jina فشل — كمل آمنًا */ }
-      return { ok: false, status: "NEEDS_SESSION", text: "", via: null, note: "الصفحة خلف جدار تسجيل دخول — تحتاج جلسة صالحة" }
+      return { ok: false, status: "NEEDS_SESSION", text: "", via: null, sourceStatus: "NEEDS_SESSION", note: "الصفحة خلف جدار تسجيل دخول — تحتاج جلسة صالحة" }
     }
   } catch (err) {
     // الشبكة/البروتوكول — نكمل لـ Jina
@@ -93,14 +99,17 @@ export async function fetchReadable(url: string, opts?: { minChars?: number; dir
   try {
     const md = await jinaFetch(url)
     if (looksLikeLoginWall(md)) {
-      return { ok: false, status: "NEEDS_SESSION", text: "", via: null, note: "الصفحة تحتاج تسجيل دخول — Jina لا يتجاوز الحماية" }
+      return { ok: false, status: "NEEDS_SESSION", text: "", via: null, sourceStatus: "NEEDS_SESSION", note: "الصفحة تحتاج تسجيل دخول — Jina لا يتجاوز الحماية" }
     }
     if (md.trim().length >= Math.min(minChars, 200)) {
-      return { ok: true, status: "OK", text: md, via: "jina" }
+      return { ok: true, status: "OK", text: md, via: "jina", sourceStatus: "JINA_SUCCESS" }
     }
-    return { ok: false, status: "ERROR", text: "", via: null, note: "المحتوى غير كافٍ حتى عبر Jina" }
+    return { ok: false, status: "ERROR", text: "", via: null, sourceStatus: "JINA_ERROR", note: "المحتوى غير كافٍ حتى عبر Jina" }
   } catch (err) {
-    const msg = err instanceof Error ? err.message.slice(0, 120) : "فشل"
-    return { ok: false, status: "ERROR", text: "", via: null, note: `فشل الجلب المباشر وJina: ${msg}` }
+    const raw = err instanceof Error ? err.message.slice(0, 120) : "فشل"
+    const isTimeout = /timeout|abort/i.test(err instanceof Error ? err.name + err.message : "")
+    const jinaStatus = (err as Error & { jinaStatus?: number })?.jinaStatus
+    const cls = jinaStatus === 403 ? "JINA_403" : isTimeout ? "JINA_TIMEOUT" : "JINA_ERROR"
+    return { ok: false, status: "ERROR", text: "", via: null, sourceStatus: cls, note: `فشل الجلب المباشر وJina: ${cls} ${raw}` }
   }
 }

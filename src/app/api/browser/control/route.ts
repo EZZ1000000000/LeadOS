@@ -10,6 +10,37 @@ import { loadSessionState } from "@/lib/browser/session-store"
 export const maxDuration = 60
 export const dynamic = "force-dynamic"
 
+/** حالة GitHub Actions runtime (طلب §14) — قراءة حقيقية فقط: أي فشل جلب → UNKNOWN بلا تلفيق */
+async function githubRuntimeStatus(): Promise<{
+  state: "OPERATIONAL" | "FAILING" | "BLOCKED_EXTERNAL" | "UNKNOWN"
+  lastRunAt: string | null
+  conclusion: string | null
+  url: string | null
+  message?: string
+}> {
+  try {
+    const repo = process.env.GH_ACTIONS_REPO || "EZZ1000000000/LeadOS"
+    const workflow = process.env.GH_ACTIONS_WORKFLOW || "browser-runtime.yml"
+    const headers: Record<string, string> = { Accept: "application/vnd.github+json", "User-Agent": "leados-control" }
+    if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/runs?per_page=1`, {
+      headers, signal: AbortSignal.timeout(8000), cache: "no-store",
+    })
+    if (!res.ok) return { state: "UNKNOWN", lastRunAt: null, conclusion: null, url: null, message: `GitHub API HTTP ${res.status}` }
+    const d = (await res.json()) as {
+      workflow_runs?: Array<{ id: number; created_at: string; conclusion: string | null; status: string; html_url: string }>
+    }
+    const r = d.workflow_runs?.[0]
+    if (!r) return { state: "UNKNOWN", lastRunAt: null, conclusion: null, url: null, message: "لا تشغيلات مسجلة" }
+    const conclusion = r.conclusion ?? r.status
+    // startup_failure على مستوى الحساب (فوترة/قيد خارجي) — أو الفشل المتكرر منذ الإقلاع
+    const state = conclusion === "success" ? "OPERATIONAL" as const : conclusion === "startup_failure" ? "BLOCKED_EXTERNAL" as const : "FAILING" as const
+    return { state, lastRunAt: r.created_at, conclusion, url: r.html_url }
+  } catch (err) {
+    return { state: "UNKNOWN", lastRunAt: null, conclusion: null, url: null, message: err instanceof Error ? err.message.slice(0, 120) : "فشل جلب حالة GitHub" }
+  }
+}
+
 export async function GET() {
   const auth = await requireAuth()
   if (isResponse(auth)) return auth
@@ -136,5 +167,5 @@ export async function GET() {
     select: { type: true, platform: true, browserId: true, generation: true, detail: true, createdAt: true },
   })
 
-  return json({ platforms, health: browserRuntimeHealth, generations: dispatches, jina, events })
+  return json({ platforms, health: browserRuntimeHealth, generations: dispatches, jina, events, github: await githubRuntimeStatus() })
 }

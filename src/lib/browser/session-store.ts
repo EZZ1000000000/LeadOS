@@ -87,6 +87,8 @@ export async function saveSessionState(
   const version = (existing?.sessionStateVersion ?? 0) + (opts.storageState ? 1 : 0)
   const data = {
     status: opts.health,
+    // النسخة تزيد مع كل حفظ storage فعلي (§3: sessionStateVersion++ مع كل حفظ)
+    ...(opts.storageState ? { sessionStateVersion: version } : {}),
     generation: opts.generation ?? existing?.generation ?? 0,
     lastError: opts.health === "EXPIRED" || opts.health === "FAILED" ? (opts.note ?? null) : null,
     ...(opts.storageState
