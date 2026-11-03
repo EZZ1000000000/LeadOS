@@ -1,0 +1,10 @@
+{
+  "name": "LeadOS Server",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "LeadOS App", "onAutoForward": "openBrowser" }
+  },
+  "postCreateCommand": "bash scripts/codespace-setup.sh",
+  "postStartCommand": "bash -c 'curl -s -o /dev/null --max-time 3 http://localhost:3000/ || (nohup bun run dev > /workspaces/LeadOS/dev.log 2>&1 &)'"
+}
