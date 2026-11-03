@@ -1,0 +1,31 @@
+name: codespace-boot
+on:
+  workflow_dispatch:
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connect to codespace and run LeadOS setup
+        env:
+          GH_TOKEN: ${{ secrets.SHIPIT_TOKEN }}
+        run: |
+          set -e
+          CS=$(gh codespace list --json name,repository --jq '.[] | select(.repository=="EZZ1000000000/LeadOS") | .name' | head -1)
+          echo "Codespace: $CS"
+          test -n "$CS"
+          gh codespace ssh -c "$CS" -- 'echo CONNECTED && hostname && git -C /workspaces/LeadOS pull origin deploy/codespace || true'
+          gh codespace ssh -c "$CS" -- bash -s < scripts/codespace-setup.sh
+          echo "=== local health check:"
+          gh codespace ssh -c "$CS" -- 'curl -s -o /dev/null -w "HTTP %{http_code}\n" --max-time 5 http://localhost:3000/ || true'
+
+      - name: Open port 3000 publicly
+        env:
+          GH_TOKEN: ${{ secrets.SHIPIT_TOKEN }}
+        run: |
+          CS=$(gh codespace list --json name,repository --jq '.[] | select(.repository=="EZZ1000000000/LeadOS") | .name' | head -1)
+          gh api -X PUT "user/codespaces/$CS/ports/3000" -f visibility=open
+          gh api "user/codespaces/$CS/ports" --jq '.ports[] | {port, visibility, url}'
